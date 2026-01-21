@@ -2,7 +2,7 @@
 name = "dataflow-pubsub-to-bq-pipeline"
 version = "1.0.0"
 description = "Pub/Sub to BigQuery streaming pipeline using Apache Beam"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "apache-beam[gcp]==2.70.0",
 ]
@@ -14,5 +14,5 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["dataflow_pubsub_to_bq"]
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []

@@ -227,6 +227,10 @@ Tested with the configuration below, the pipeline achieved excellent performance
 | **Peak Throughput (Backlog Catchup)** | **58,630+ RPS** |
 | **Peak Scaling Factor** | **29x target, 17x sustained** |
 
+**Metrics Dashboard:**
+
+![Dataflow Metrics - Peak Throughput](images/metrics.jpg)
+
 **Key Findings:**
 - The Python SDK with Storage Write API and Runner V2 easily handles high-volume streaming workloads (2k+ RPS)
 - During backlog catchup scenarios, the pipeline can scale to **58k+ RPS** to clear accumulated messages

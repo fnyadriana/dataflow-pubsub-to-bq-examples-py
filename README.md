@@ -1,6 +1,6 @@
-# Pub/Sub to BigQuery Pipeline (Python)
+# Pub/Sub to BigQuery Pipeline (Python & Java)
 
-Python implementation of a streaming pipeline that reads taxi ride data from Google Cloud Pub/Sub and writes to BigQuery.
+Apache Beam pipelines (Python & Java) that read taxi ride data from Google Cloud Pub/Sub and write to BigQuery.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ Pub/Sub (taxirides-realtime) -> Dataflow Pipeline -> BigQuery (taxi_events)
   - Raw JSON: Ingests the full payload into a BigQuery `JSON` column.
 - Uses BigQuery Storage Write API for optimal performance
 - Micro-batching with 1-second flush intervals
-- Supports both local (DirectRunner) and production (DataflowRunner with Runner V2)
+- Production deployment via Dataflow (DataflowRunner with Runner V2)
 
 ## Project Structure
 
@@ -28,7 +28,6 @@ dataflow-pubsub-to-bq-examples-py/
 ├── README.md                   # This file
 ├── AGENTS.md                   # Guidelines for AI agents
 ├── pyproject.toml              # Project configuration and dependencies (uv)
-├── run_local.sh                # Local testing script
 ├── run_dataflow.sh             # Production Dataflow deployment script (Flattened Schema)
 ├── run_dataflow_json.sh        # Production Dataflow deployment script (JSON Column)
 ├── run_dataflow_json_java.sh   # Java Production Dataflow deployment script
@@ -87,8 +86,10 @@ attributes: STRING
 - Google Cloud Project with billing enabled
 - APIs enabled: Dataflow, Pub/Sub, BigQuery, Cloud Storage
 - gcloud CLI configured
-- Python 3.9+
+- Python 3.12+ (for Python pipeline)
+- Java 17 (for Java pipeline)
 - uv package manager
+- Maven 3.x
 
 ## Setup
 
@@ -136,19 +137,6 @@ Prerequisites: Java 17, Maven 3.x
 ```
 
 This script handles the build (`mvn package`) and submission steps automatically.
-
-### Local Testing (DirectRunner)
-
-```bash
-./run_local.sh
-```
-
-This script will:
-1. Check/create BigQuery dataset
-2. Check/create BigQuery table with schema
-3. Check/create Pub/Sub subscription
-4. Install Python dependencies
-5. Run pipeline locally with DirectRunner
 
 ### Production Deployment (DataflowRunner)
 
@@ -300,13 +288,6 @@ Key metrics to watch:
 - Memory usage per worker
 
 ## Configuration
-
-### run_local.sh
-Edit these variables:
-- `PROJECT_ID`: Your GCP project ID
-- `REGION`: GCP region for resources
-- `BIGQUERY_DATASET`: BigQuery dataset name
-- `SUBSCRIPTION_NAME`: Pub/Sub subscription name
 
 ### run_dataflow.sh
 Edit these variables:

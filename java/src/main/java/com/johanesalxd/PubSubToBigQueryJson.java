@@ -11,35 +11,35 @@ import org.joda.time.Duration;
 
 public class PubSubToBigQueryJson {
 
-    public static void main(String[] args) {
-        // Parse pipeline options
-        PubSubToBigQueryOptions options = PipelineOptionsFactory.fromArgs(args)
-                .withValidation()
-                .as(PubSubToBigQueryOptions.class);
+  public static void main(String[] args) {
+    // Parse pipeline options
+    PubSubToBigQueryOptions options = PipelineOptionsFactory.fromArgs(args)
+        .withValidation()
+        .as(PubSubToBigQueryOptions.class);
 
-        // Create the pipeline
-        Pipeline pipeline = Pipeline.create(options);
+    // Create the pipeline
+    Pipeline pipeline = Pipeline.create(options);
 
-        // Read from Pub/Sub
-        pipeline
-            .apply("ReadFromPubSub", PubsubIO.readMessagesWithAttributes()
-                .fromSubscription(options.getSubscription()))
+    // Read from Pub/Sub
+    pipeline
+        .apply("ReadFromPubSub", PubsubIO.readMessagesWithAttributes()
+            .fromSubscription(options.getSubscription()))
 
-            // Parse messages to TableRow
-            .apply("ParseMessagesToRawJson", ParDo.of(
-                new PubsubMessageToRawJson(options.getSubscriptionName())))
+        // Parse messages to TableRow
+        .apply("ParseMessagesToRawJson", ParDo.of(
+            new PubsubMessageToRawJson(options.getSubscriptionName())))
 
-            // Write to BigQuery using Storage Write API
-            .apply("WriteToBigQuery", BigQueryIO.writeTableRows()
-                .to(options.getOutputTable())
-                .withSchema(RawJsonBigQuerySchema.getSchema())
-                .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
-                .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
-                .withMethod(BigQueryIO.Write.Method.STORAGE_WRITE_API)
-                .withTriggeringFrequency(Duration.standardSeconds(1))
-            );
+        // Write to BigQuery using Storage Write API
+        .apply("WriteToBigQuery", BigQueryIO.writeTableRows()
+            .to(options.getOutputTable())
+            .withSchema(RawJsonBigQuerySchema.getSchema())
+            .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_APPEND)
+            .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
+            .withMethod(BigQueryIO.Write.Method.STORAGE_WRITE_API)
+            .withTriggeringFrequency(Duration.standardSeconds(1))
+        );
 
-        // Run the pipeline
-        pipeline.run();
-    }
+    // Run the pipeline
+    pipeline.run();
+  }
 }

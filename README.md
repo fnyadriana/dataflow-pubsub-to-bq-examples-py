@@ -31,6 +31,10 @@ dataflow-pubsub-to-bq-examples-py/
 ├── run_local.sh                # Local testing script
 ├── run_dataflow.sh             # Production Dataflow deployment script (Flattened Schema)
 ├── run_dataflow_json.sh        # Production Dataflow deployment script (JSON Column)
+├── run_dataflow_json_java.sh   # Java Production Dataflow deployment script
+├── java/                       # Java implementation
+│   ├── pom.xml
+│   └── src/
 └── dataflow_pubsub_to_bq/
     ├── __init__.py
     ├── pipeline.py             # Main pipeline code (Flattened)
@@ -110,6 +114,28 @@ uv sync
 This will create a virtual environment and install all dependencies defined in `pyproject.toml`.
 
 ## Usage
+
+### Java Implementation (Comparison)
+
+A parallel Java implementation is provided to enable direct performance comparisons with the Python version. It mirrors the Python "Raw JSON" pipeline architecture exactly:
+
+*   **Beam SDK:** Java SDK 2.70.0 (Matching Python version)
+*   **Write Method:** Storage Write API with 1-second triggering frequency.
+*   **Schema Strategy:**
+    *   **Operational:** The `run_dataflow_json_java.sh` script pre-creates the table using `bq mk` to ensure infrastructure state.
+    *   **Application:** The Java code (`RawJsonBigQuerySchema.java`) also defines the schema and uses `CREATE_IF_NEEDED`. This redundancy ensures the pipeline is self-healing and allows Beam to validate data structures before writing.
+
+**Note on Schema:** Both the Python and Java pipelines support the `JSON` column type. The Python implementation uses `json.dumps` to serialize the dictionary before writing, while the Java implementation passes the raw JSON string directly to the `payload` column defined as `JSON` type in BigQuery.
+
+**Running the Java Pipeline:**
+
+Prerequisites: Java 17, Maven 3.x
+
+```bash
+./run_dataflow_json_java.sh
+```
+
+This script handles the build (`mvn package`) and submission steps automatically.
 
 ### Local Testing (DirectRunner)
 

@@ -107,14 +107,12 @@ java -jar ${JAR_FILE} \
     --subscription=${FULL_SUBSCRIPTION} \
     --outputTable=${FULL_TABLE} \
     --subscriptionName=${SUBSCRIPTION_NAME} \
+    --streaming \
     --experiments=use_runner_v2 \
     --workerMachineType=n2-standard-4 \
     --numWorkers=5 \
     --maxNumWorkers=5 \
-    --autoscalingAlgorithm=NONE \
-    --diskSizeGb=30 \
-    --enableStreamingEngine \
-    --streaming
+    --enableStreamingEngine
 
 echo ""
 echo "=== Job Submitted Successfully ==="
@@ -125,4 +123,3 @@ echo "https://console.cloud.google.com/dataflow/jobs/${REGION}/${JOB_NAME}?proje
 echo ""
 echo "Monitor BigQuery table at:"
 echo "https://console.cloud.google.com/bigquery?project=${PROJECT_ID}&ws=!1m5!1m4!4m3!1s${PROJECT_ID}!2s${BIGQUERY_DATASET}!3s${BIGQUERY_TABLE}"
-echo ""

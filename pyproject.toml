@@ -15,4 +15,7 @@ build-backend = "hatchling.build"
 packages = ["dataflow_pubsub_to_bq"]
 
 [dependency-groups]
-dev = []
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.14.13",
+]

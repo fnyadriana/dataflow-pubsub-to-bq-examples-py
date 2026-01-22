@@ -4,7 +4,7 @@ from datetime import datetime
 import json
 import logging
 import time
-from typing import Any, Dict
+from typing import Any
 
 import apache_beam as beam
 from apache_beam.io.gcp.pubsub import PubsubMessage

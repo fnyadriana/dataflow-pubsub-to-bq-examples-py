@@ -11,6 +11,7 @@ from apache_beam.io.gcp import bigquery
 from apache_beam.io.gcp import pubsub
 from apache_beam.options.pipeline_options import PipelineOptions
 from dataflow_pubsub_to_bq.pipeline_options import PubSubToBigQueryOptions
+from dataflow_pubsub_to_bq.transforms.raw_json import get_dead_letter_bigquery_schema
 from dataflow_pubsub_to_bq.transforms.raw_json import get_raw_json_bigquery_schema
 from dataflow_pubsub_to_bq.transforms.raw_json import ParsePubSubMessageToRawJson
 
@@ -33,15 +34,32 @@ def run(argv=None):
             with_attributes=True,
         )
 
-        # Parse messages and write to BigQuery with Storage Write API
+        # Parse messages
+        rows = messages | "ParseMessagesToRawJson" >> beam.ParDo(
+            ParsePubSubMessageToRawJson(custom_options.subscription_name)
+        ).with_outputs("dlq", main="success")
+
+        # Write Success to BigQuery with Storage Write API
         (
-            messages
-            | "ParseMessagesToRawJson"
-            >> beam.ParDo(ParsePubSubMessageToRawJson(custom_options.subscription_name))
+            rows.success
             | "WriteToBigQuery"
             >> bigquery.WriteToBigQuery(
                 table=custom_options.output_table,
                 schema={"fields": get_raw_json_bigquery_schema()},
+                write_disposition=bigquery.BigQueryDisposition.WRITE_APPEND,
+                create_disposition=bigquery.BigQueryDisposition.CREATE_IF_NEEDED,
+                method=bigquery.WriteToBigQuery.Method.STORAGE_WRITE_API,
+                triggering_frequency=1,
+            )
+        )
+
+        # Write Failures to BigQuery DLQ
+        (
+            rows.dlq
+            | "WriteToDLQ"
+            >> bigquery.WriteToBigQuery(
+                table=f"{custom_options.output_table}_dlq",
+                schema={"fields": get_dead_letter_bigquery_schema()},
                 write_disposition=bigquery.BigQueryDisposition.WRITE_APPEND,
                 create_disposition=bigquery.BigQueryDisposition.CREATE_IF_NEEDED,
                 method=bigquery.WriteToBigQuery.Method.STORAGE_WRITE_API,

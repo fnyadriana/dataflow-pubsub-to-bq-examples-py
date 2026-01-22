@@ -114,6 +114,19 @@ uv sync
 
 This will create a virtual environment and install all dependencies defined in `pyproject.toml`.
 
+## Schema Management
+
+### Python Implementation
+The Python pipeline relies on external infrastructure management for table creation.
+- **Tables must be pre-created:** The pipeline uses `CREATE_NEVER` disposition.
+- **Reason:** The Python SDK's BigQueryIO connector has validation limitations with the `JSON` column type in schema definitions.
+- **Automation:** The provided `run_dataflow_json.sh` script handles the creation of both the main table (with `JSON` payload column) and the partitioned Dead Letter Queue (DLQ) table.
+
+### Java Implementation
+The Java pipeline supports both methods:
+- **Operational:** Can rely on pre-created tables (like the Python flow).
+- **Self-Healing:** Also supports `CREATE_IF_NEEDED`. The Java SDK natively supports and validates the `JSON` column type, allowing it to create the correct schema at runtime if the table is missing.
+
 ## Usage
 
 ### Java Implementation (Comparison)

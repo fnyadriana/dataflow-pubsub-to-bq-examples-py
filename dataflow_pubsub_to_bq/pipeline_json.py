@@ -47,7 +47,7 @@ def run(argv=None):
                 table=custom_options.output_table,
                 schema={"fields": get_raw_json_bigquery_schema()},
                 write_disposition=bigquery.BigQueryDisposition.WRITE_APPEND,
-                create_disposition=bigquery.BigQueryDisposition.CREATE_IF_NEEDED,
+                create_disposition=bigquery.BigQueryDisposition.CREATE_NEVER,
                 method=bigquery.WriteToBigQuery.Method.STORAGE_WRITE_API,
                 triggering_frequency=1,
             )
@@ -61,7 +61,7 @@ def run(argv=None):
                 table=f"{custom_options.output_table}_dlq",
                 schema={"fields": get_dead_letter_bigquery_schema()},
                 write_disposition=bigquery.BigQueryDisposition.WRITE_APPEND,
-                create_disposition=bigquery.BigQueryDisposition.CREATE_IF_NEEDED,
+                create_disposition=bigquery.BigQueryDisposition.CREATE_NEVER,
                 method=bigquery.WriteToBigQuery.Method.STORAGE_WRITE_API,
                 triggering_frequency=1,
             )

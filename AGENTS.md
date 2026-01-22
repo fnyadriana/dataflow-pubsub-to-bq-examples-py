@@ -45,7 +45,15 @@ Both implementations support:
 
 ## 3. Testing & Verification
 
-*Note: No formalized test suites are currently implemented for either language.*
+Both implementations include unit tests for critical transformations (JSON parsing, DLQ routing).
+
+### Python
+**Tool:** `pytest`
+-   **Run Tests:** `uv run pytest`
+
+### Java
+**Tool:** `junit`
+-   **Run Tests:** `mvn -f java/pom.xml test`
 
 ## 4. Linting & Formatting
 
@@ -118,6 +126,6 @@ dataflow-pubsub-to-bq-examples-py/
     -   **Python:** Edit in `dataflow_pubsub_to_bq/`. Use Type Hints.
     -   **Java:** Edit in `java/src/...`. Use 2-space indentation.
 4.  **Verify:**
-    -   **Python:** Lint (`ruff`).
-    -   **Java:** Compile (`mvn package`).
+    -   **Python:** Lint (`ruff`) and Test (`pytest`).
+    -   **Java:** Compile (`mvn package`) and Test (`mvn test`).
 5.  **Finalize:** Ensure code compiles/runs and all debug artifacts are removed.

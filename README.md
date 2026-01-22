@@ -114,6 +114,22 @@ uv sync
 
 This will create a virtual environment and install all dependencies defined in `pyproject.toml`.
 
+## Testing
+
+Unit tests are implemented for both languages to verify transformation logic and Dead Letter Queue (DLQ) routing.
+
+### Python
+Run the pytest suite:
+```bash
+uv run pytest
+```
+
+### Java
+Run JUnit tests:
+```bash
+mvn -f java/pom.xml test
+```
+
 ## Schema Management
 
 ### Python Implementation

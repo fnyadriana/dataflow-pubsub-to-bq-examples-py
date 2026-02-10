@@ -789,12 +789,17 @@ During live testing with mixed v1/v2 traffic, all messages received the **same
 `schema_revision_id`** (the v1 revision ID) -- even after committing the v2 revision,
 updating the topic's revision range, and restarting the pipeline.
 
-**Why this happens:** Pub/Sub evaluates schema revisions from newest to oldest and stamps
-the message with the first matching revision. Because v2 adds only nullable fields with
-defaults, both v1 and v2 messages are valid against **both** revisions under Avro's
-forward/backward compatibility rules. Pub/Sub may consistently match one revision for all
-messages regardless of which fields are present. This is server-side Pub/Sub behavior, not
-a pipeline code issue.
+**Why this happens:** Avro requires mutual compatibility between revisions (each revision
+must work as both reader and writer schema). This means both v1 and v2 messages are valid
+against **both** revisions -- v2 adds only nullable fields with defaults (backward
+compatible), and v1 messages with missing v2 fields are accepted by v2 (forward compatible).
+Pub/Sub evaluates revisions from newest to oldest and stamps the first match
+([docs](https://cloud.google.com/pubsub/docs/publish-topics-schema)). When all messages
+match the newest revision, all messages receive that revision's ID. In practice, propagation
+delays after topic revision range updates (documented as "a few minutes" in the
+[commit-schema-revision](https://cloud.google.com/pubsub/docs/commit-schema-revision) docs)
+may also cause messages to be stamped with the previously-configured revision during the
+transition window. This is server-side Pub/Sub behavior, not a pipeline code issue.
 
 **Practical consequence:** `schema_revision_id` cannot be used to distinguish v1 from v2
 messages. The reliable discriminator is `enrichment_timestamp IS NOT NULL`:

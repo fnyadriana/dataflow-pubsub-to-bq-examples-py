@@ -74,22 +74,22 @@ wait_for_connect_cluster() {
     local cluster_name="$1"
     local max_attempts=60
     local attempt=0
-    echo "Waiting for Connect cluster '${cluster_name}' to become RUNNING..."
+    echo "Waiting for Connect cluster '${cluster_name}' to become ACTIVE..."
     while [[ "${attempt}" -lt "${max_attempts}" ]]; do
         local state
         state=$(gcloud managed-kafka connect-clusters describe "${cluster_name}" \
             --location="${REGION}" \
             --project="${PROJECT_ID}" \
             --format="value(state)" 2>/dev/null || echo "UNKNOWN")
-        if [[ "${state}" == "RUNNING" ]]; then
-            echo "Connect cluster '${cluster_name}' is RUNNING."
+        if [[ "${state}" == "ACTIVE" ]]; then
+            echo "Connect cluster '${cluster_name}' is ACTIVE."
             return 0
         fi
         attempt=$((attempt + 1))
         echo "  Attempt ${attempt}/${max_attempts}: state=${state}, waiting 30s..."
         sleep 30
     done
-    echo "ERROR: Connect cluster '${cluster_name}' did not become RUNNING within 30 minutes."
+    echo "ERROR: Connect cluster '${cluster_name}' did not become ACTIVE within 30 minutes."
     exit 1
 }
 
@@ -250,10 +250,19 @@ if ! gcloud managed-kafka connectors describe "${CONNECTOR_NAME}" \
     --connect-cluster="${CONNECT_CLUSTER_NAME}" \
     --location="${REGION}" --project="${PROJECT_ID}" 2>/dev/null; then
     echo "Creating Pub/Sub Source connector..."
+    # kafka.record.headers=true: Pub/Sub message attributes go to Kafka headers,
+    #   value is raw message body bytes (required for ByteArrayConverter when
+    #   messages have custom attributes, otherwise connector fails silently).
+    # kafka.partition.count=40: Distribute across all topic partitions
+    #   (default is 1, which defeats the partitioning strategy).
+    # kafka.partition.scheme=round_robin: Even distribution for balanced
+    #   Dataflow consumption across workers.
     gcloud managed-kafka connectors create "${CONNECTOR_NAME}" \
         --connect-cluster="${CONNECT_CLUSTER_NAME}" \
         --location="${REGION}" \
-        --configs=connector.class=com.google.pubsub.kafka.source.CloudPubSubSourceConnector,cps.project="${PROJECT_ID}",cps.subscription="${SUBSCRIPTION_NAME}",cps.streamingPull.enabled=true,kafka.topic="${KAFKA_TOPIC_NAME}",tasks.max=3,value.converter=org.apache.kafka.connect.converters.ByteArrayConverter,key.converter=org.apache.kafka.connect.storage.StringConverter
+        --task-restart-min-backoff=60s \
+        --task-restart-max-backoff=1800s \
+        --configs=connector.class=com.google.pubsub.kafka.source.CloudPubSubSourceConnector,cps.project="${PROJECT_ID}",cps.subscription="${SUBSCRIPTION_NAME}",cps.streamingPull.enabled=true,kafka.topic="${KAFKA_TOPIC_NAME}",kafka.record.headers=true,kafka.partition.count=40,kafka.partition.scheme=round_robin,tasks.max=3,value.converter=org.apache.kafka.connect.converters.ByteArrayConverter,key.converter=org.apache.kafka.connect.storage.StringConverter
 else
     echo "Pub/Sub Source connector already exists."
 fi

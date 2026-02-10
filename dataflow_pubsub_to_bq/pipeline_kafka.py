@@ -35,7 +35,7 @@ def run(argv=None):
             config={
                 "bootstrap_servers": custom_options.bootstrap_server,
                 "topic": custom_options.kafka_topic,
-                "data_format": "RAW",
+                "format": "RAW",
                 "auto_offset_reset_config": "earliest",
                 # GMK SASL/SSL authentication via Application Default Credentials
                 "security.protocol": "SASL_SSL",

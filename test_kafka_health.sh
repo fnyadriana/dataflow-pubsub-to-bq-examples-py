@@ -31,7 +31,7 @@
 set -e
 
 # --- Defaults ---
-PROJECT_ID="johanesa-playground-326616"
+PROJECT_ID="your-project-id"
 REGION="us-central1"
 SUBSCRIPTION_NAME="taxi_telemetry_kafka"
 CONNECT_CLUSTER_NAME="taxi-connect-cluster"

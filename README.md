@@ -1,79 +1,123 @@
-# Pub/Sub to BigQuery Pipeline (Python & Java)
+# Pub/Sub to BigQuery Dataflow Pipelines (Python)
 
-Apache Beam pipelines (Python & Java) that read taxi ride data from Google Cloud Pub/Sub and write to BigQuery.
+Apache Beam pipelines (Python) that read taxi ride data from Google Cloud Pub/Sub and write to BigQuery. Three pipeline variants demonstrate different ingestion strategies.
 
 ## Architecture
 
 ```
-Pub/Sub (taxirides-realtime) -> Dataflow Pipeline -> BigQuery (taxi_events)
-                                                  -> BigQuery DLQ (taxi_events_dlq) [Error Handling]
+Pub/Sub (taxirides-realtime) -> Dataflow Pipeline -> BigQuery
 ```
+
+## Pipeline Variants
+
+### 1. Standard (Flattened)
+
+Parses JSON fields into specific BigQuery columns with full type mapping.
+
+```bash
+./run_dataflow.sh
+```
+
+- Extracts individual fields (`ride_id`, `latitude`, `timestamp`, etc.) into typed columns
+- DLQ table for malformed messages
+- Timestamp parsed from ISO 8601 string to BigQuery `TIMESTAMP`
+
+### 2. Raw JSON
+
+Ingests the entire message payload into a BigQuery `JSON` column.
+
+```bash
+./run_dataflow_json.sh
+```
+
+- Stores raw payload in a `JSON` column for flexible querying
+- Schema evolution without table updates
+- DLQ table for malformed messages
+
+### 3. Schema-Driven (Pub/Sub Schema Registry)
+
+Fetches Avro schema from the Pub/Sub Schema Registry at startup and dynamically generates BigQuery table schema and field extraction logic.
+
+```bash
+./run_dataflow_schema_driven.sh
+# In a separate terminal:
+./run_mirror_publisher.sh
+```
+
+- Schema registry is the single source of truth
+- Avro schema drives BQ column generation automatically
+- Mirror publisher bridges the public topic to a schema-validated topic (pure pass-through)
+- Custom `iso-datetime` logical type maps ISO 8601 strings to BQ `TIMESTAMP`
+- No DLQ needed -- schema registry validates at publish time
+
+For detailed design, schema evolution strategy, and architecture decisions, see [docs/schema_evolution_plan.md](docs/schema_evolution_plan.md).
 
 ## Features
 
-- Reads from public Pub/Sub topic (taxirides-realtime)
-- Parses taxi ride JSON messages
+- Reads from public Pub/Sub topic (`taxirides-realtime`)
 - Captures Pub/Sub metadata (subscription_name, message_id, publish_time, attributes)
-- Writes to partitioned and clustered BigQuery table
-- **Dual Pipeline Support:**
-  - Standard: Flattens JSON fields into specific columns.
-  - Raw JSON: Ingests the full payload into a BigQuery `JSON` column.
-- Uses BigQuery Storage Write API for optimal performance
-- Micro-batching with 1-second flush intervals
+- Writes to partitioned and clustered BigQuery tables
+- BigQuery Storage Write API with 1-second micro-batching
 - Production deployment via Dataflow (DataflowRunner with Runner V2)
 
 ## Project Structure
 
 ```
 dataflow-pubsub-to-bq-examples-py/
-├── README.md                   # This file
-├── AGENTS.md                   # Guidelines for AI agents
-├── pyproject.toml              # Project configuration and dependencies (uv)
-├── run_dataflow.sh             # Production Dataflow deployment script (Flattened Schema)
-├── run_dataflow_json.sh        # Production Dataflow deployment script (JSON Column)
-├── run_dataflow_json_java.sh   # Java Production Dataflow deployment script
-├── java/                       # Java implementation
-│   ├── pom.xml
-│   └── src/
-│       ├── main/java/com/johanesalxd/
-│       │   ├── PubSubToBigQueryJson.java
-│       │   ├── transforms/
-│       │   └── schemas/
-│       └── test/java/com/johanesalxd/transforms/
-│           └── PubsubMessageToRawJsonTest.java
-├── tests/                      # Unit tests
-│   ├── test_json_to_tablerow.py
-│   └── test_raw_json.py
+├── README.md
+├── AGENTS.md                              # Guidelines for AI agents
+├── pyproject.toml                         # Project configuration (uv)
+├── run_dataflow.sh                        # Deployment: Standard pipeline
+├── run_dataflow_json.sh                   # Deployment: JSON pipeline
+├── run_dataflow_schema_driven.sh          # Deployment: Schema-driven pipeline
+├── run_mirror_publisher.sh                # Mirror publisher launcher
+├── publish_to_schema_topic.py             # Mirror publisher (pass-through relay)
+├── schemas/
+│   ├── taxi_ride_v1.avsc                  # Avro v1 schema definition
+│   └── generate_bq_schema.py             # BQ schema generator from registry
+├── docs/
+│   └── schema_evolution_plan.md           # Schema evolution design doc
+├── tests/
+│   ├── test_json_to_tablerow.py           # Standard pipeline tests
+│   ├── test_raw_json.py                   # JSON pipeline tests
+│   └── test_schema_driven_to_tablerow.py  # Schema-driven pipeline tests
 └── dataflow_pubsub_to_bq/
     ├── __init__.py
-    ├── pipeline.py             # Main pipeline code (Flattened)
-    ├── pipeline_json.py        # Alternative pipeline code (Raw JSON)
-    ├── pipeline_options.py     # Custom pipeline options
+    ├── pipeline.py                        # Entry point: Standard
+    ├── pipeline_json.py                   # Entry point: JSON
+    ├── pipeline_schema_driven.py          # Entry point: Schema-driven
+    ├── pipeline_options.py                # Options: Standard + JSON
+    ├── pipeline_schema_driven_options.py  # Options: Schema-driven
     └── transforms/
         ├── __init__.py
-        ├── json_to_tablerow.py # JSON parsing transform (Flattened)
-        └── raw_json.py         # Raw JSON parsing transform
+        ├── json_to_tablerow.py            # Standard: JSON field extraction
+        ├── raw_json.py                    # JSON: raw payload storage
+        └── schema_driven_to_tablerow.py   # Schema-driven: Avro-based extraction
 ```
 
 ## Input Data Format
 
-The pipeline reads taxi ride events from the public Pub/Sub topic with this structure:
+The pipelines read taxi ride events from the public Pub/Sub topic with this structure:
 
 ```json
 {
-  "ride_id": "7da878a4-37ce-4aa6-a899-07d4054afe96",
-  "point_idx": 267,
-  "latitude": 40.76561,
-  "longitude": -73.96572,
-  "timestamp": "2023-07-10T19:00:33.56833-04:00",
-  "meter_reading": 11.62449,
-  "meter_increment": 0.043537416,
+  "ride_id": "cd3b816b-bc33-4893-a232-ea7cbbb9d0e8",
+  "point_idx": 104,
+  "latitude": 40.76011,
+  "longitude": -73.97316,
+  "timestamp": "2026-02-10T08:14:17.61844-05:00",
+  "meter_reading": 4.8108845,
+  "meter_increment": 0.046258505,
   "ride_status": "enroute",
-  "passenger_count": 1
+  "passenger_count": 6
 }
 ```
 
+The `timestamp` field is an ISO 8601 string with timezone offset.
+
 ## BigQuery Output Schema
+
+### Standard Pipeline (`taxi_events`)
 
 ```
 subscription_name: STRING
@@ -92,15 +136,51 @@ passenger_count: INT64
 attributes: STRING
 ```
 
+### JSON Pipeline (`taxi_events_json`)
+
+```
+subscription_name: STRING
+message_id: STRING
+publish_time: TIMESTAMP (partitioned, clustered)
+processing_time: TIMESTAMP
+attributes: STRING
+payload: JSON
+```
+
+### Schema-Driven Pipeline (`taxi_events_schema`)
+
+Envelope fields (static) plus dynamic payload fields generated from Avro schema:
+
+```
+# Envelope (always present)
+subscription_name: STRING
+message_id: STRING
+publish_time: TIMESTAMP (partitioned, clustered)
+processing_time: TIMESTAMP
+attributes: STRING
+schema_name: STRING
+schema_revision_id: STRING
+schema_encoding: STRING
+
+# Payload (generated from Avro schema)
+ride_id: STRING
+point_idx: INT64
+latitude: FLOAT64
+longitude: FLOAT64
+timestamp: TIMESTAMP
+meter_reading: FLOAT64
+meter_increment: FLOAT64
+ride_status: STRING
+passenger_count: INT64
+```
+
 ## Prerequisites
 
 - Google Cloud Project with billing enabled
 - APIs enabled: Dataflow, Pub/Sub, BigQuery, Cloud Storage
 - gcloud CLI configured
-- Python 3.12+ (for Python pipeline)
-- Java 17 (for Java pipeline)
+- Python 3.12+
 - uv package manager
-- Maven 3.x
 
 ## Setup
 
@@ -127,60 +207,15 @@ This will create a virtual environment and install all dependencies defined in `
 
 ## Testing
 
-Unit tests are implemented for both languages to verify transformation logic and Dead Letter Queue (DLQ) routing.
-
-### Python
 Run the pytest suite:
+
 ```bash
 uv run pytest
 ```
 
-### Java
-Run JUnit tests:
-```bash
-mvn -f java/pom.xml test
-```
+## Production Deployment
 
-## Schema Management
-
-### Python Implementation
-The Python pipeline relies on external infrastructure management for table creation.
-- **Tables must be pre-created:** The pipeline uses `CREATE_NEVER` disposition.
-- **Reason:** The Python SDK's BigQueryIO connector has validation limitations with the `JSON` column type in schema definitions.
-- **Automation:** The provided scripts (`run_dataflow.sh` and `run_dataflow_json.sh`) handle the creation of the main table and the partitioned Dead Letter Queue (DLQ) table.
-
-### Java Implementation
-The Java pipeline supports both methods:
-- **Operational:** Can rely on pre-created tables (like the Python flow).
-- **Self-Healing:** Also supports `CREATE_IF_NEEDED`. The Java SDK natively supports and validates the `JSON` column type, allowing it to create the correct schema at runtime if the table is missing.
-
-## Usage
-
-### Java Implementation (Comparison)
-
-A parallel Java implementation is provided to enable direct performance comparisons with the Python version. It mirrors the Python "Raw JSON" pipeline architecture exactly:
-
-*   **Beam SDK:** Java SDK 2.70.0 (Matching Python version)
-*   **Write Method:** Storage Write API with 1-second triggering frequency.
-*   **Schema Strategy:**
-    *   **Operational:** The `run_dataflow_json_java.sh` script pre-creates the table using `bq mk` to ensure infrastructure state.
-    *   **Application:** The Java code (`RawJsonBigQuerySchema.java`) also defines the schema and uses `CREATE_IF_NEEDED`. This redundancy ensures the pipeline is self-healing and allows Beam to validate data structures before writing.
-
-**Note on Schema:** Both the Python and Java pipelines support the `JSON` column type. The Python implementation uses `json.dumps` to serialize the dictionary before writing, while the Java implementation passes the raw JSON string directly to the `payload` column defined as `JSON` type in BigQuery.
-
-**Running the Java Pipeline:**
-
-Prerequisites: Java 17, Maven 3.x
-
-```bash
-./run_dataflow_json_java.sh
-```
-
-This script handles the build (`mvn package`) and submission steps automatically.
-
-### Production Deployment (DataflowRunner)
-
-**Option 1: Standard Flattened Schema**
+### Standard Flattened Schema
 
 ```bash
 ./run_dataflow.sh
@@ -194,18 +229,31 @@ This script will:
 5. Install Python dependencies
 6. Submit pipeline to Dataflow with Runner V2
 
-**Option 2: Raw JSON Column Schema**
+### Raw JSON Column Schema
 
 ```bash
 ./run_dataflow_json.sh
 ```
 
-This pipeline ingests the entire message payload into a specific BigQuery `JSON` column named `payload`, along with standard metadata fields. This is useful for:
-- Handling semi-structured data
-- Schema evolution without table updates
-- Preserving original message fidelity
-
 The output table is `taxi_events_json`.
+
+### Schema-Driven (Pub/Sub Schema Registry)
+
+```bash
+./run_dataflow_schema_driven.sh
+```
+
+This script will:
+1. Create Pub/Sub schema from `schemas/taxi_ride_v1.avsc` (first run only)
+2. Create schema-enabled topic and subscriptions
+3. Fetch schema from registry and generate BQ table schema
+4. Submit pipeline to Dataflow
+
+Then start the mirror publisher in a separate terminal:
+
+```bash
+./run_mirror_publisher.sh
+```
 
 ## Performance Optimizations
 
@@ -301,16 +349,16 @@ The production deployment uses these settings:
 | Runner | DataflowRunner with Runner V2 | Required for Python SDK |
 | Machine Type | n2-standard-4 | 4 vCPUs, 16 GB RAM |
 | Workers | 5 (fixed) | No auto-scaling |
-| Threads per Worker | 48 (default) | 12 threads per vCPU × 4 vCPUs |
-| Total Capacity | 240 threads | 5 workers × 48 threads |
+| Threads per Worker | 48 (default) | 12 threads per vCPU x 4 vCPUs |
+| Total Capacity | 240 threads | 5 workers x 48 threads |
 | Actual Load | ~3,400 RPS | From Pub/Sub subscription |
 | Per-Thread Load | ~14 messages/sec | 3,400 / 240 threads |
 
 ### Thread Configuration
 
 The Python SDK on Dataflow uses **12 threads per vCPU** by default. For n2-standard-4 machines (4 vCPUs), this means:
-- 12 threads/vCPU × 4 vCPUs = **48 threads per worker**
-- 5 workers × 48 threads = **240 total threads**
+- 12 threads/vCPU x 4 vCPUs = **48 threads per worker**
+- 5 workers x 48 threads = **240 total threads**
 
 This is sufficient for processing 3,400+ RPS with low system lag.
 

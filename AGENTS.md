@@ -4,21 +4,16 @@ This document provides comprehensive instructions and guidelines for AI agents a
 
 ## 1. Project Overview
 
-This repository contains Apache Beam pipelines for reading from Google Cloud Pub/Sub and writes to BigQuery.
-It supports two implementations:
-1.  **Python** (Primary): Located in the root directory.
-2.  **Java** (Comparison): Located in the `java/` directory.
+This repository contains Apache Beam pipelines (Python) for reading from Google Cloud Pub/Sub and writing to BigQuery. Three pipeline variants are provided:
 
-Both implementations support:
--   **Production Deployment**: `DataflowRunner` for Google Cloud.
+1. **Standard (Flattened)**: Parses JSON fields into specific BigQuery columns.
+2. **Raw JSON**: Ingests the full payload into a BigQuery `JSON` column.
+3. **Schema-Driven**: Fetches Avro schema from the Pub/Sub Schema Registry at startup and dynamically generates BigQuery table schema and field extraction logic.
 
-**Key Technologies:**
--   **Python:** 3.12+, `uv` manager, Apache Beam (GCP).
--   **Java:** JDK 17, Maven, Apache Beam (GCP) 2.70.0 (matching Python).
+**Key Technologies:** Python 3.12+, `uv` package manager, Apache Beam 2.70.0 (GCP extras).
 
 ## 2. Environment Setup & Build
 
-### Python (Root Directory)
 **Manager:** `uv`
 -   **Sync Environment:**
     ```bash
@@ -33,105 +28,60 @@ Both implementations support:
     uv build --wheel
     ```
 
-### Java (`java/` Directory)
-**Manager:** Maven (`mvn`)
--   **Java Version:** JDK 17
--   **Build & Package (Skip Tests):**
-    ```bash
-    mvn -f java/pom.xml clean package -DskipTests
-    ```
--   **Artifact Location:**
-    The JAR is built to `java/target/dataflow-pubsub-to-bq-json-1.0-SNAPSHOT.jar`.
-
 ## 3. Testing & Verification
 
-Both implementations include unit tests for critical transformations (JSON parsing, DLQ routing).
-
-### Python
 **Tool:** `pytest`
 -   **Run Tests:** `uv run pytest`
 
-### Java
-**Tool:** `junit`
--   **Run Tests:** `mvn -f java/pom.xml test`
-
 ## 4. Linting & Formatting
 
-### Python
 **Tool:** `ruff`
 -   **Lint:** `uv run ruff check .`
 -   **Format:** `uv run ruff format .`
 
-### Java
-**Style:** **2 spaces** indentation (Standard Java).
--   **Format:** Ensure code is formatted consistently (2 spaces) before committing.
--   **Imports:** Clean up unused imports.
-
 ## 5. Code Style & Conventions
 
-### Python Guidelines
 -   **Indentation:** 4 spaces.
 -   **Type Hints:** Mandatory for all function signatures.
 -   **Docstrings:** Google Style (`Args:`, `Returns:`, `Raises:`).
 -   **Naming:** `snake_case` for functions/vars, `CamelCase` for classes.
 -   **Imports:** Grouped (StdLib, ThirdParty, Local), sorted alphabetically.
 
-### Java Guidelines
--   **Indentation:** **2 spaces**.
--   **Naming:**
-    -   Classes: `PascalCase` (e.g., `PubSubToBigQueryJson`).
-    -   Methods/Variables: `camelCase` (e.g., `getSubscription`).
-    -   Constants: `UPPER_SNAKE_CASE`.
--   **Javadoc:** Required for public classes and methods.
--   **Structure:**
-    ```java
-    package com.johanesalxd;
-    
-    import ...;
-    
-    public class MyClass {
-      // 2 spaces indentation
-      public void myMethod() {
-        ...
-      }
-    }
-    ```
-
 ## 6. Repository Structure
 
 ```
 dataflow-pubsub-to-bq-examples-py/
-├── dataflow_pubsub_to_bq/      # [Python] Main Source Code
-│   ├── pipeline.py             # Entry point (Standard)
-│   ├── pipeline_json.py        # Entry point (JSON)
-│   ├── pipeline_options.py     # Options configuration
-│   └── transforms/             # Custom Beam PTransforms
-├── tests/                      # [Python] Unit Tests
+├── dataflow_pubsub_to_bq/          # Main source code
+│   ├── pipeline.py                 # Entry point (Standard/Flattened)
+│   ├── pipeline_json.py            # Entry point (Raw JSON)
+│   ├── pipeline_schema_driven.py   # Entry point (Schema-Driven)
+│   ├── pipeline_options.py         # Options (Standard + JSON)
+│   ├── pipeline_schema_driven_options.py  # Options (Schema-Driven)
+│   └── transforms/                 # Custom Beam PTransforms
+│       ├── json_to_tablerow.py     # Flattened JSON parsing
+│       ├── raw_json.py             # Raw JSON parsing
+│       └── schema_driven_to_tablerow.py  # Schema-driven Avro-based parsing
+├── schemas/                        # Avro schema definitions
+│   ├── taxi_ride_v1.avsc           # v1 schema for Pub/Sub Schema Registry
+│   └── generate_bq_schema.py       # BQ schema generator from registry
+├── tests/                          # Unit tests
 │   ├── test_json_to_tablerow.py
-│   └── test_raw_json.py
-├── java/                       # [Java] Project Root
-│   ├── pom.xml                 # Maven configuration
-│   └── src/
-│       ├── main/java/com/johanesalxd/
-│       │   ├── PubSubToBigQueryJson.java
-│       │   ├── transforms/
-│       │   └── schemas/
-│       └── test/java/com/johanesalxd/transforms/
-│           └── PubsubMessageToRawJsonTest.java
-├── run_dataflow.sh             # [Python] Execution script (Standard)
-├── run_dataflow_json.sh        # [Python] Execution script (JSON)
-├── run_dataflow_json_java.sh   # [Java] Execution script
-└── pyproject.toml              # [Python] Dependencies
+│   ├── test_raw_json.py
+│   └── test_schema_driven_to_tablerow.py
+├── docs/                           # Design documents
+│   └── schema_evolution_plan.md    # Schema evolution design doc
+├── publish_to_schema_topic.py      # Mirror publisher (pass-through relay)
+├── run_dataflow.sh                 # Deployment script (Standard)
+├── run_dataflow_json.sh            # Deployment script (JSON)
+├── run_dataflow_schema_driven.sh   # Deployment script (Schema-Driven)
+├── run_mirror_publisher.sh         # Mirror publisher launcher
+└── pyproject.toml                  # Project configuration and dependencies
 ```
 
 ## 7. Workflow for Agents
 
-1.  **Identify Language:** Determine if the task is for Python (root) or Java (`java/`).
-2.  **Contextualize:** Read relevant config (`pyproject.toml` or `java/pom.xml`) and execution scripts (`run_*.sh`) to understand how the code is built and deployed.
-3.  **Develop:**
-    -   **Python:** Edit in `dataflow_pubsub_to_bq/`. Use Type Hints.
-    -   **Java:** Edit in `java/src/...`. Use 2-space indentation.
-4.  **Verify:**
-    -   **Python:** Lint (`ruff`) and Test (`pytest`).
-    -   **Java:** Compile (`mvn package`) and Test (`mvn test`).
-5.  **Finalize:** Ensure code compiles/runs and all debug artifacts are removed.
+1.  **Identify Pipeline:** Determine which pipeline variant the task targets (standard, JSON, or schema-driven).
+2.  **Contextualize:** Read `pyproject.toml` and the relevant `run_*.sh` script to understand how the code is built and deployed.
+3.  **Develop:** Edit in `dataflow_pubsub_to_bq/`. Use type hints for all function signatures.
+4.  **Verify:** Lint (`uv run ruff check .`) and test (`uv run pytest`).
+5.  **Finalize:** Ensure all tests pass and debug artifacts are removed.

@@ -107,6 +107,7 @@ echo "Pipeline Configuration:"
 echo "  - Source: Google Managed Kafka (via Managed I/O)"
 echo "  - Machine Type: n2-standard-4 (4 vCPUs, 16GB RAM)"
 echo "  - Workers: 5 (fixed, no auto-scaling)"
+echo "  - Network: ${SUBNET_NAME} subnet, internal IPs only (for GMK PSC)"
 echo "  - BigQuery Write: Storage Write API with 1-second micro-batching"
 echo ""
 echo "Kafka Sizing (for ~2,000 RPS, ~300 bytes/msg = 0.6 MBps):"
@@ -302,6 +303,8 @@ uv run python -m dataflow_pubsub_to_bq.pipeline_kafka \
     --experiments=use_runner_v2 \
     --sdk_container_image=apache/beam_python3.12_sdk:2.70.0 \
     --extra_packages="${WHEEL_FILE}" \
+    --subnetwork=regions/${REGION}/subnetworks/${SUBNET_NAME} \
+    --no_use_public_ips \
     --machine_type=n2-standard-4 \
     --num_workers=5 \
     --max_num_workers=5 \

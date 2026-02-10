@@ -163,6 +163,7 @@ dataflow-pubsub-to-bq-examples-py/
 │   ├── taxi_ride_v1.avsc                  # Avro v1 schema definition
 │   └── taxi_ride_v2.avsc                  # Avro v2 schema (adds enrichment fields)
 ├── scripts/
+│   ├── cleanup_schema_driven.sh          # Teardown all schema-driven resources
 │   ├── enrich_taxi_ride.yaml             # SMT definition for v2 enrichment
 │   ├── generate_bq_schema.py             # BQ schema generator from registry
 │   ├── publish_to_schema_topic.py        # Mirror publisher (pass-through relay)

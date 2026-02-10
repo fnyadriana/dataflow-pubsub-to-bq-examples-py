@@ -62,11 +62,15 @@ dataflow-pubsub-to-bq-examples-py/
 │       ├── raw_json.py             # Raw JSON parsing
 │       └── schema_driven_to_tablerow.py  # Schema-driven Avro-based parsing
 ├── schemas/                        # Avro schema definitions
-│   └── taxi_ride_v1.avsc           # v1 schema for Pub/Sub Schema Registry
+│   ├── taxi_ride_v1.avsc           # v1 schema for Pub/Sub Schema Registry
+│   └── taxi_ride_v2.avsc           # v2 schema (adds enrichment fields)
 ├── scripts/                        # Supporting scripts
+│   ├── cleanup_schema_driven.sh    # Teardown all schema-driven resources
+│   ├── enrich_taxi_ride.yaml       # SMT definition for v2 enrichment
 │   ├── generate_bq_schema.py       # BQ schema generator from registry
 │   ├── publish_to_schema_topic.py  # Mirror publisher (pass-through relay)
-│   └── run_mirror_publisher.sh     # Mirror publisher launcher
+│   ├── run_mirror_publisher.sh     # Mirror publisher launcher
+│   └── run_schema_evolution.sh     # Phase 2: schema evolution + v2 publisher
 ├── tests/                          # Unit tests
 │   ├── test_json_to_tablerow.py
 │   ├── test_raw_json.py

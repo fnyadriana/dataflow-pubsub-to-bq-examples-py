@@ -380,6 +380,7 @@ Table is partitioned on `publish_time` (DAY) and clustered on `publish_time`.
 | `scripts/enrich_taxi_ride.yaml` | v2 | SMT definition (JavaScript UDF) for v2 enrichment |
 | `scripts/run_schema_evolution.sh` | v2 | Phase 2 orchestration: schema evolution + v2 mirror publisher |
 | `run_dataflow_schema_driven.sh` | v1 | End-to-end deployment script (auto-cancels old job, fetches schema from registry) |
+| `scripts/cleanup_schema_driven.sh` | v1+v2 | Tears down all schema-driven resources for a fresh start |
 | `tests/test_schema_driven_to_tablerow.py` | v1+v2 | Unit tests for dynamic extraction and type mapping |
 
 ## Phase 2: Schema v2 Evolution

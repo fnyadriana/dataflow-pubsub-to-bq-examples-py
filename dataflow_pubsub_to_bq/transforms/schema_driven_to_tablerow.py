@@ -8,6 +8,7 @@ This module provides:
 
 import json
 import time
+from datetime import datetime
 from typing import Any
 
 import apache_beam as beam
@@ -29,6 +30,7 @@ _AVRO_PRIMITIVE_TO_BQ: dict[str, str] = {
 _AVRO_LOGICAL_TO_BQ: dict[str, str] = {
     "timestamp-millis": "TIMESTAMP",
     "timestamp-micros": "TIMESTAMP",
+    "iso-datetime": "TIMESTAMP",
     "date": "DATE",
     "time-millis": "TIME",
     "time-micros": "TIME",
@@ -82,8 +84,9 @@ def avro_to_bq_schema(
         - bq_fields: List of BigQuery schema field dicts with name, type, mode.
         - field_names: List of field name strings (in schema order).
         - timestamp_fields: Set of field names that are TIMESTAMP type.
-            These need conversion from epoch millis/micros to Beam Timestamp
-            objects for Storage Write API compatibility.
+            These need conversion from epoch millis/micros or ISO 8601
+            strings to Beam Timestamp objects for Storage Write API
+            compatibility.
 
     Raises:
         ValueError: If the Avro schema contains unsupported types.
@@ -165,7 +168,8 @@ class ParseSchemaDrivenMessage(beam.DoFn):
                 These are extracted dynamically from each message payload.
             timestamp_fields: Set of field names that are TIMESTAMP type.
                 Values for these fields are converted from epoch milliseconds
-                to Beam Timestamp objects for Storage Write API compatibility.
+                or parsed from ISO 8601 strings to Beam Timestamp objects
+                for Storage Write API compatibility.
         """
         self.subscription_name = subscription_name
         self.payload_field_names = payload_field_names
@@ -216,9 +220,14 @@ class ParseSchemaDrivenMessage(beam.DoFn):
         # Dynamic payload fields -- driven by schema
         for field_name in self.payload_field_names:
             value = payload.get(field_name)
-            # Convert epoch millis to Beam Timestamp for TIMESTAMP columns
+            # Convert timestamp values to Beam Timestamp for TIMESTAMP columns
             if value is not None and field_name in self.timestamp_fields:
-                value = Timestamp.of(value / 1000.0)
+                if isinstance(value, str):
+                    # ISO 8601 string (iso-datetime logical type)
+                    value = Timestamp.of(datetime.fromisoformat(value).timestamp())
+                else:
+                    # Epoch millis (timestamp-millis logical type)
+                    value = Timestamp.of(value / 1000.0)
             bq_row[field_name] = value
 
         yield bq_row

@@ -1,10 +1,10 @@
-"""Mirror publisher that bridges an unschematized Pub/Sub topic to a schema-governed topic.
+"""Pure pass-through mirror publisher for Pub/Sub schema topic.
 
-Reads messages from a source subscription (e.g., on the public taxi topic),
-converts the timestamp field from ISO 8601 string to epoch milliseconds
-(to match the Avro timestamp-millis logical type), and re-publishes to a
-schema-enabled topic. Pub/Sub validates each message against the Avro schema
-at publish time.
+Reads messages from a source subscription (e.g., on the public taxi topic)
+and re-publishes them as-is to a schema-enabled topic. No data transformation
+is performed -- the Avro schema uses the iso-datetime custom logical type on a
+string base type, so the ISO 8601 timestamps pass through unchanged. Pub/Sub
+validates each message against the Avro schema at publish time.
 
 Usage:
     python publish_to_schema_topic.py \
@@ -14,11 +14,9 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 import signal
 import sys
-from datetime import datetime
 from concurrent.futures import Future
 
 from google.cloud import pubsub_v1
@@ -26,38 +24,21 @@ from google.cloud import pubsub_v1
 logger = logging.getLogger(__name__)
 
 
-def convert_timestamp_to_millis(payload: dict) -> dict:
-    """Converts the timestamp field from ISO 8601 string to epoch milliseconds.
-
-    Args:
-        payload: Parsed JSON payload dict.
-
-    Returns:
-        The payload with the timestamp field converted to epoch milliseconds.
-        If the timestamp field is missing or cannot be parsed, the payload
-        is returned unchanged.
-    """
-    timestamp_str = payload.get("timestamp")
-    if timestamp_str and isinstance(timestamp_str, str):
-        try:
-            dt = datetime.fromisoformat(timestamp_str)
-            payload["timestamp"] = int(dt.timestamp() * 1000)
-        except (ValueError, AttributeError):
-            logger.warning("Failed to parse timestamp: %s", timestamp_str)
-    return payload
-
-
-def publish_callback(future: Future, message_data: str) -> None:
+def publish_callback(future: Future, message_data: bytes) -> None:
     """Callback for handling publish results.
 
     Args:
         future: The publish future.
-        message_data: The original message data for logging.
+        message_data: The original message data bytes for logging.
     """
     try:
         future.result(timeout=30)
     except Exception as e:
-        logger.error("Publish failed: %s (data: %s...)", e, message_data[:100])
+        logger.error(
+            "Publish failed: %s (data: %s...)",
+            e,
+            message_data[:100],
+        )
 
 
 def run(
@@ -82,16 +63,10 @@ def run(
         """Processes a single message from the source subscription."""
         nonlocal published_count, error_count
         try:
-            # Parse and convert
-            payload = json.loads(message.data.decode("utf-8"))
-            converted = convert_timestamp_to_millis(payload)
-            data = json.dumps(converted).encode("utf-8")
-
-            # Publish to schema topic
+            # Pure pass-through -- re-publish as-is
+            data = message.data
             future = publisher.publish(target_topic, data=data)
-            future.add_done_callback(
-                lambda f: publish_callback(f, data.decode("utf-8"))
-            )
+            future.add_done_callback(lambda f: publish_callback(f, data))
 
             published_count += 1
             if published_count % 1000 == 0:

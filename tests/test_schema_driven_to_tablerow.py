@@ -1,6 +1,7 @@
 """Tests for the schema-driven transform and Avro-to-BigQuery type mapper."""
 
 import json
+from datetime import datetime
 
 import apache_beam as beam
 from apache_beam.io.gcp.pubsub import PubsubMessage
@@ -28,7 +29,7 @@ V1_SCHEMA = json.dumps(
             {"name": "longitude", "type": "double"},
             {
                 "name": "timestamp",
-                "type": {"type": "long", "logicalType": "timestamp-millis"},
+                "type": {"type": "string", "logicalType": "iso-datetime"},
             },
             {"name": "meter_reading", "type": "double"},
             {"name": "meter_increment", "type": "double"},
@@ -50,7 +51,7 @@ V2_SCHEMA = json.dumps(
             {"name": "longitude", "type": "double"},
             {
                 "name": "timestamp",
-                "type": {"type": "long", "logicalType": "timestamp-millis"},
+                "type": {"type": "string", "logicalType": "iso-datetime"},
             },
             {"name": "meter_reading", "type": "double"},
             {"name": "meter_increment", "type": "double"},
@@ -60,7 +61,7 @@ V2_SCHEMA = json.dumps(
                 "name": "enrichment_timestamp",
                 "type": [
                     "null",
-                    {"type": "long", "logicalType": "timestamp-millis"},
+                    {"type": "string", "logicalType": "iso-datetime"},
                 ],
                 "default": None,
             },
@@ -153,6 +154,13 @@ def test_avro_to_bq_schema_logical_types():
                     "name": "d",
                     "type": {"type": "int", "logicalType": "date"},
                 },
+                {
+                    "name": "ts_iso",
+                    "type": {
+                        "type": "string",
+                        "logicalType": "iso-datetime",
+                    },
+                },
             ],
         }
     )
@@ -161,8 +169,9 @@ def test_avro_to_bq_schema_logical_types():
 
     assert field_map["ts_millis"]["type"] == "TIMESTAMP"
     assert field_map["ts_micros"]["type"] == "TIMESTAMP"
+    assert field_map["ts_iso"]["type"] == "TIMESTAMP"
     assert field_map["d"]["type"] == "DATE"
-    assert timestamp_fields == {"ts_millis", "ts_micros"}
+    assert timestamp_fields == {"ts_millis", "ts_micros", "ts_iso"}
 
 
 def test_avro_to_bq_schema_nullable_union():
@@ -215,12 +224,13 @@ def test_envelope_schema():
 
 def test_parse_valid_v1_message():
     """Tests that a valid v1 message produces correct output with all fields."""
+    iso_ts = "2025-01-15T05:45:49.168000-05:00"
     payload = {
         "ride_id": "abc-123",
         "point_idx": 42,
         "latitude": 40.7128,
         "longitude": -74.0060,
-        "timestamp": 1736899549168,
+        "timestamp": iso_ts,
         "meter_reading": 15.5,
         "meter_increment": 0.25,
         "ride_status": "enroute",
@@ -236,6 +246,8 @@ def test_parse_valid_v1_message():
     )
 
     _, field_names, timestamp_fields = avro_to_bq_schema(V1_SCHEMA)
+
+    expected_epoch = datetime.fromisoformat(iso_ts).timestamp()
 
     with TestPipeline() as p:
         results = (
@@ -259,9 +271,8 @@ def test_parse_valid_v1_message():
             assert row["point_idx"] == 42
             assert row["latitude"] == 40.7128
             assert row["passenger_count"] == 2
-            # Timestamp converted from epoch millis to Beam Timestamp
-            expected_ts = Timestamp.of(1736899549168 / 1000.0)
-            assert row["timestamp"] == expected_ts
+            # Timestamp parsed from ISO 8601 string to Beam Timestamp
+            assert row["timestamp"] == Timestamp.of(expected_epoch)
 
         assert_that(results, check_output)
 
@@ -274,7 +285,7 @@ def test_parse_message_with_missing_optional_fields():
         "point_idx": 1,
         "latitude": 40.75,
         "longitude": -74.0,
-        "timestamp": 1736899549168,
+        "timestamp": "2025-01-15T05:45:49.168000-05:00",
         "meter_reading": 5.0,
         "meter_increment": 0.1,
         "ride_status": "pickup",
@@ -316,7 +327,7 @@ def test_parse_only_extracts_schema_fields():
         "point_idx": 1,
         "latitude": 40.75,
         "longitude": -74.0,
-        "timestamp": 1736899549168,
+        "timestamp": "2025-01-15T05:45:49.168000-05:00",
         "meter_reading": 5.0,
         "meter_increment": 0.1,
         "ride_status": "pickup",

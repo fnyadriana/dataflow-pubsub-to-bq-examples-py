@@ -32,7 +32,7 @@ with zero code modifications -- only a job restart.
   - [Why Avro Over Protocol Buffers](#why-avro-over-protocol-buffers)
   - [Why JSON Encoding (Not Binary)](#why-json-encoding-not-binary)
   - [Schema Registry as Validation vs Encoding](#schema-registry-as-validation-vs-encoding)
-  - [Avro Logical Types for Timestamps](#avro-logical-types-for-timestamps)
+  - [Custom Logical Type for Timestamps](#custom-logical-type-for-timestamps)
 - [Pub/Sub Schema Registry Concepts](#pubsub-schema-registry-concepts)
   - [Schema Revisions](#schema-revisions)
   - [Publish-Time Validation](#publish-time-validation)
@@ -78,13 +78,12 @@ The demonstration has two phases:
 └──────────────────────────────┘     └────────┬───────────┘
                                               │
                                               v
-                                     ┌────────────────────┐
-                                     │ Mirror Publisher    │
-                                     │ (read + re-publish) │
-                                     └────────┬───────────┘
-                                              │ converts timestamp
-                                              │ to epoch millis
-                                              v
+                                      ┌────────────────────┐
+                                      │ Mirror Publisher    │
+                                      │ (pure pass-through) │
+                                      └────────┬───────────┘
+                                               │
+                                               v
                                      ┌────────────────────┐     ┌──────────────┐
                                      │ Schema Topic       │────>│ Subscription │
                                      │ (Avro, JSON enc)   │     └──────┬───────┘
@@ -164,7 +163,7 @@ File: `schemas/taxi_ride_v1.avsc`
     {"name": "point_idx", "type": "int"},
     {"name": "latitude", "type": "double"},
     {"name": "longitude", "type": "double"},
-    {"name": "timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "timestamp", "type": {"type": "string", "logicalType": "iso-datetime"}},
     {"name": "meter_reading", "type": "double"},
     {"name": "meter_increment", "type": "double"},
     {"name": "ride_status", "type": "string"},
@@ -174,9 +173,10 @@ File: `schemas/taxi_ride_v1.avsc`
 ```
 
 These 9 fields match the payload structure from the public taxi topic. The `timestamp` field
-uses the Avro `timestamp-millis` logical type (a `long` representing epoch milliseconds),
-which maps directly to BigQuery `TIMESTAMP`. The mirror publisher converts the source ISO 8601
-string to epoch milliseconds before publishing. See [Avro Logical Types for Timestamps](#avro-logical-types-for-timestamps)
+uses a **custom Avro logical type** `iso-datetime` on a `string` base type. This signals to
+the pipeline code that the string contains an ISO 8601 timestamp and should be converted to
+a BigQuery `TIMESTAMP` column. The mirror publisher passes the timestamp string through
+as-is -- no conversion needed. See [Custom Logical Type for Timestamps](#custom-logical-type-for-timestamps)
 for rationale.
 
 The `.avsc` file is only used as input to `gcloud pubsub schemas create`. After the schema
@@ -196,16 +196,18 @@ list -- the mapping function parses the Avro schema JSON and generates BQ schema
 | `"float"` | FLOAT64 | REQUIRED | |
 | `"double"` | FLOAT64 | REQUIRED | `latitude`, `meter_reading` |
 | `"boolean"` | BOOL | REQUIRED | |
-| `{"type": "long", "logicalType": "timestamp-millis"}` | TIMESTAMP | REQUIRED | `timestamp` |
+| `{"type": "string", "logicalType": "iso-datetime"}` | TIMESTAMP | REQUIRED | `timestamp` |
+| `{"type": "long", "logicalType": "timestamp-millis"}` | TIMESTAMP | REQUIRED | |
 | `{"type": "long", "logicalType": "timestamp-micros"}` | TIMESTAMP | REQUIRED | |
 | `{"type": "int", "logicalType": "date"}` | DATE | REQUIRED | |
 | `["null", "string"]` | STRING | NULLABLE | `region` (v2) |
 | `["null", "int"]` | INT64 | NULLABLE | |
-| `["null", {"type": "long", "logicalType": "timestamp-millis"}]` | TIMESTAMP | NULLABLE | `enrichment_timestamp` (v2) |
+| `["null", {"type": "string", "logicalType": "iso-datetime"}]` | TIMESTAMP | NULLABLE | `enrichment_timestamp` (v2) |
 
 The mapping function handles:
 - Simple types (`"string"`, `"int"`, `"double"`, etc.)
-- Avro logical types (`timestamp-millis`, `timestamp-micros`, `date`)
+- Standard Avro logical types (`timestamp-millis`, `timestamp-micros`, `date`)
+- Custom logical types (`iso-datetime` for ISO 8601 timestamp strings)
 - Union types (`["null", T]`) mapped to NULLABLE mode
 
 ### Infrastructure Setup
@@ -232,15 +234,17 @@ updates the BQ table with `bq update --schema=...` to add any new columns. This 
 
 File: `publish_to_schema_topic.py`
 
-A standalone Python script that:
+A standalone Python script that acts as a **pure pass-through relay**:
 
 1. Reads messages from the source subscription (public taxi topic) using `SubscriberClient`.
-2. Parses the JSON payload.
-3. Converts the `timestamp` field from ISO 8601 string to epoch milliseconds (to match
-   the Avro `timestamp-millis` logical type). The value is published as a JSON number.
-4. Re-publishes the converted JSON payload to the schema-enabled topic using `PublisherClient`.
-5. Pub/Sub validates the message against the Avro schema at publish time.
-6. Messages that fail schema validation are rejected by Pub/Sub with `INVALID_ARGUMENT`.
+2. Re-publishes the JSON payload as-is to the schema-enabled topic using `PublisherClient`.
+3. Pub/Sub validates the message against the Avro schema at publish time.
+4. Messages that fail schema validation are rejected by Pub/Sub with `INVALID_ARGUMENT`.
+
+The publisher performs **no data transformation**. The `timestamp` field stays as an ISO 8601
+string, which matches the Avro schema's `string` base type (with `iso-datetime` custom logical
+type annotation). All type conversion (e.g., ISO 8601 string to BQ TIMESTAMP) happens in the
+Dataflow pipeline's DoFn, where business logic belongs.
 
 The publisher runs as a separate process (not part of Dataflow). It bridges the unschematized
 public topic to the schema-governed topic.
@@ -338,7 +342,7 @@ v1:
 | `point_idx` | INT64 | Avro `int` |
 | `latitude` | FLOAT64 | Avro `double` |
 | `longitude` | FLOAT64 | Avro `double` |
-| `timestamp` | TIMESTAMP | Avro `timestamp-millis` |
+| `timestamp` | TIMESTAMP | Avro `string` with `iso-datetime` logical type |
 | `meter_reading` | FLOAT64 | Avro `double` |
 | `meter_increment` | FLOAT64 | Avro `double` |
 | `ride_status` | STRING | Avro `string` |
@@ -348,7 +352,7 @@ v2 adds:
 
 | Column | Type | Source |
 |---|---|---|
-| `enrichment_timestamp` | TIMESTAMP | Avro `["null", timestamp-millis]` |
+| `enrichment_timestamp` | TIMESTAMP | Avro `["null", iso-datetime]` |
 | `region` | STRING | Avro `["null", "string"]` |
 
 Table is partitioned on `publish_time` (DAY) and clustered on `publish_time`.
@@ -361,7 +365,7 @@ Table is partitioned on `publish_time` (DAY) and clustered on `publish_time`.
 | `dataflow_pubsub_to_bq/pipeline_schema_driven.py` | Pipeline entry point: fetches schema from registry, dynamic BQ schema + extraction |
 | `dataflow_pubsub_to_bq/pipeline_schema_driven_options.py` | Pipeline options: adds `--pubsub_schema` |
 | `dataflow_pubsub_to_bq/transforms/schema_driven_to_tablerow.py` | DoFn + Avro-to-BQ type mapper + envelope schema |
-| `publish_to_schema_topic.py` | Mirror publisher (timestamp conversion + re-publish) |
+| `publish_to_schema_topic.py` | Mirror publisher (pure pass-through relay) |
 | `run_dataflow_schema_driven.sh` | End-to-end deployment script (fetches schema from registry for BQ table) |
 | `tests/test_schema_driven_to_tablerow.py` | Unit tests for dynamic extraction and type mapping |
 
@@ -385,12 +389,12 @@ File: `schemas/taxi_ride_v2.avsc`
     {"name": "point_idx", "type": "int"},
     {"name": "latitude", "type": "double"},
     {"name": "longitude", "type": "double"},
-    {"name": "timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "timestamp", "type": {"type": "string", "logicalType": "iso-datetime"}},
     {"name": "meter_reading", "type": "double"},
     {"name": "meter_increment", "type": "double"},
     {"name": "ride_status", "type": "string"},
     {"name": "passenger_count", "type": "int"},
-    {"name": "enrichment_timestamp", "type": ["null", {"type": "long", "logicalType": "timestamp-millis"}], "default": null},
+    {"name": "enrichment_timestamp", "type": ["null", {"type": "string", "logicalType": "iso-datetime"}], "default": null},
     {"name": "region", "type": ["null", "string"], "default": null}
   ]
 }
@@ -398,8 +402,8 @@ File: `schemas/taxi_ride_v2.avsc`
 
 The v2 schema adds two optional fields with `null` defaults:
 
-- `enrichment_timestamp`: Timestamp when the SMT enriched the message. Uses `timestamp-millis`
-  logical type (nullable) to map to BQ `TIMESTAMP`.
+- `enrichment_timestamp`: Timestamp when the SMT enriched the message. Uses the custom
+  `iso-datetime` logical type (nullable) to map to BQ `TIMESTAMP`.
 - `region`: Derived field (e.g., based on latitude/longitude ranges). Nullable string.
 
 Avro schema resolution rules guarantee backward/forward compatibility when adding optional
@@ -416,8 +420,8 @@ enriches each message before the subscriber receives it.
 function enrichTaxiRide(message, metadata) {
   const data = JSON.parse(message.data);
 
-  // Add enrichment timestamp (epoch millis for timestamp-millis logical type)
-  data.enrichment_timestamp = Date.now();
+  // Add enrichment timestamp (ISO 8601 string for iso-datetime logical type)
+  data.enrichment_timestamp = new Date().toISOString();
 
   // Derive region from latitude (simplified example)
   if (data.latitude > 40.8) {
@@ -754,29 +758,56 @@ exists for systems that need compact wire format and Avro-native integration. Fo
 demonstration, JSON encoding cleanly separates the governance concern from the encoding
 concern.
 
-### Avro Logical Types for Timestamps
-
-Avro supports timestamps via logical types that annotate a `long` base type:
-
-- `timestamp-millis`: epoch milliseconds (maps to BQ `TIMESTAMP`).
-- `timestamp-micros`: epoch microseconds (maps to BQ `TIMESTAMP`).
+### Custom Logical Type for Timestamps
 
 The public taxi data sends timestamps as ISO 8601 strings (e.g.,
-`"2026-01-15T05:45:49.16882-05:00"`). Two approaches exist:
+`"2026-01-15T05:45:49.16882-05:00"`). JSON has no native timestamp type -- timestamps are
+always serialized as strings or numbers. With JSON encoding on the Pub/Sub topic, the Avro
+schema should describe the actual wire format.
+
+Three approaches were considered:
 
 **Option A: Avro `string` type, BQ `STRING` column.**
-Simpler -- no conversion needed. But loses BQ TIMESTAMP benefits (partitioning, time-range
-queries, native timestamp functions).
+Simplest -- no conversion anywhere. But the schema loses semantic information (nothing says
+"this string is a timestamp"), and the BQ column is STRING, losing partitioning and native
+timestamp function benefits.
 
-**Option B: Avro `timestamp-millis` logical type, BQ `TIMESTAMP` column (chosen).**
-The mirror publisher converts ISO 8601 strings to epoch milliseconds before publishing.
-This is a one-time conversion in the publisher, and keeps the schema self-describing --
-the Avro schema declares "this field is a timestamp", and the pipeline's type mapper
-automatically generates a BQ `TIMESTAMP` column. No special-case logic in the pipeline.
+**Option B: Avro `timestamp-millis` logical type (`long` base), BQ `TIMESTAMP` column.**
+Semantically rich, but requires the mirror publisher to convert ISO 8601 strings to epoch
+milliseconds before publishing. This forces business logic into what should be a dumb relay.
 
-The Pub/Sub docs confirm this mapping. From the
-[BigQuery subscription schema compatibility](https://cloud.google.com/pubsub/docs/bigquery):
-`timestamp-millis` and `timestamp-micros` Avro logical types map to BQ `TIMESTAMP`.
+**Option C: Custom Avro logical type `iso-datetime` (`string` base), BQ `TIMESTAMP` column (chosen).**
+Uses Avro's support for custom logical types to annotate a `string` field as a timestamp:
+
+```json
+{"name": "timestamp", "type": {"type": "string", "logicalType": "iso-datetime"}}
+```
+
+This approach gives us the best of both worlds:
+
+- **Mirror publisher stays a pure pass-through.** The source sends a string, the Avro schema
+  expects a string, no conversion needed.
+- **Schema carries semantic information.** The `logicalType` annotation tells downstream
+  consumers (our pipeline code) that this string contains a timestamp, not arbitrary text.
+- **Pipeline maps it to BQ `TIMESTAMP`.** The `_AVRO_LOGICAL_TO_BQ` mapping includes
+  `"iso-datetime": "TIMESTAMP"`, so the type mapper automatically generates a BQ TIMESTAMP
+  column. The DoFn parses the ISO 8601 string and converts it to a Beam `Timestamp` object.
+- **Pub/Sub validates the base type.** The schema registry sees `string` and validates
+  that the value is a string. Custom logical types are valid Avro and silently ignored by
+  libraries that don't understand them -- they fall back to the base type.
+
+**Important caveat:** Pub/Sub does not validate that the string is a valid ISO 8601 timestamp.
+It only checks that it's a string. Semantic validation (is this a parseable timestamp?) happens
+in the pipeline DoFn. This is acceptable because:
+
+1. The source data (public taxi topic) always sends valid ISO 8601 timestamps.
+2. The schema registry's role is structural validation (correct fields, correct types),
+   not semantic validation (is this string a valid date?).
+3. If invalid timestamp strings appear, the pipeline DoFn can handle the error gracefully.
+
+This pattern is extensible. Other custom logical types (e.g., `iso-date`, `email`, `uuid`)
+could be added to annotate string fields with semantic meaning while keeping the Avro base
+type as `string` for JSON encoding compatibility.
 
 ## Pub/Sub Schema Registry Concepts
 

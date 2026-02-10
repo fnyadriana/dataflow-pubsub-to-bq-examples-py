@@ -7,7 +7,7 @@
     {"name": "point_idx", "type": "int"},
     {"name": "latitude", "type": "double"},
     {"name": "longitude", "type": "double"},
-    {"name": "timestamp", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "timestamp", "type": {"type": "string", "logicalType": "iso-datetime"}},
     {"name": "meter_reading", "type": "double"},
     {"name": "meter_increment", "type": "double"},
     {"name": "ride_status", "type": "string"},

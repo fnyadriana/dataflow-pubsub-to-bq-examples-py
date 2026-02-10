@@ -388,35 +388,8 @@ Key metrics to watch:
 
 ## Configuration
 
-Edit these variables in the `run_dataflow*.sh` scripts:
-- `PROJECT_ID`: Your GCP project ID
-- `REGION`: GCP region for Dataflow job
-- `TEMP_BUCKET`: GCS bucket for temp/staging
-- `BIGQUERY_DATASET`: BigQuery dataset name
-- `SUBSCRIPTION_NAME`: Pub/Sub subscription name
-
-## Troubleshooting
-
-### High System Lag
-
-If system lag is increasing:
-1. Increase number of workers (`--num_workers`)
-2. Use larger machine type (`--machine_type=n2-standard-8`)
-3. Check BigQuery write quota limits
-
-### OOM Errors
-
-If workers run out of memory:
-1. Reduce `--number_of_worker_harness_threads` (max 12)
-2. Use machine type with more RAM
-3. Check for memory leaks in transforms
-
-### Slow BigQuery Writes
-
-If BigQuery is the bottleneck:
-1. Enable Streaming Engine (`--enable_streaming_engine`)
-2. Check BigQuery streaming insert quota
-3. Consider batch writes with windowing
+Update the project-specific variables (project ID, region, bucket, dataset,
+subscription) at the top of each `run_dataflow*.sh` script before deployment.
 
 ## License
 

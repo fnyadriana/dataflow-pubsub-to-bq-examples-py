@@ -1,103 +1,137 @@
-# Pub/Sub to BigQuery Dataflow Pipelines (Python)
+# Streaming Pub/Sub to BigQuery: Three Ingestion Patterns
 
-Apache Beam pipelines (Python) that read taxi ride data from Google Cloud Pub/Sub and write to BigQuery. Three pipeline variants demonstrate different ingestion strategies.
+Apache Beam pipelines (Python) demonstrating three approaches to streaming data from Google Cloud Pub/Sub to BigQuery. Each pattern makes different trade-offs between pipeline complexity, schema flexibility, and data governance.
 
-## Architecture
+All three pipelines read from the same public taxi ride topic (`projects/pubsub-public-data/topics/taxirides-realtime`) and write to BigQuery using the Storage Write API.
 
-```
-Pub/Sub (taxirides-realtime) -> Dataflow Pipeline -> BigQuery
-```
+## Choosing a Pattern
 
-## Pipeline Variants
+| Criteria | Standard (ETL) | Raw JSON (ELT) | Schema-Driven (ETL) |
+|---|---|---|---|
+| Pipeline complexity | Medium | Low | Medium |
+| Schema change impact | Code + deploy + ALTER TABLE | None | Job restart only |
+| Data loss risk on schema change | Possible | None | None |
+| BigQuery query complexity | Low (typed columns) | Medium (JSON functions) | Low (typed columns) |
+| Infrastructure required | Pub/Sub + Dataflow | Pub/Sub + Dataflow | Pub/Sub + Schema Registry + Dataflow |
+| Replay / reprocess | Requires code changes | Re-create views | Re-run deployment script |
+| Publish-time validation | No | No | Yes (schema registry) |
+| Schema governance | Implicit (in code) | None | Explicit (registry revisions) |
 
-### 1. Standard (Flattened)
+## Pattern 1: Standard ETL (Flattened)
 
-Parses JSON fields into specific BigQuery columns with full type mapping.
+The pipeline parses each JSON message field-by-field and writes to typed BigQuery columns. Field extraction and the BQ schema are defined in application code.
 
 ```bash
 ./run_dataflow.sh
 ```
 
-- Extracts individual fields (`ride_id`, `latitude`, `timestamp`, etc.) into typed columns
-- DLQ table for malformed messages
-- Timestamp parsed from ISO 8601 string to BigQuery `TIMESTAMP`
+**How it works:**
+- Pipeline reads JSON messages from Pub/Sub
+- DoFn parses each field (`ride_id`, `latitude`, `timestamp`, etc.) with explicit `.get()` calls
+- Timestamp strings are parsed from ISO 8601 to BigQuery `TIMESTAMP`
+- Malformed messages are routed to a Dead Letter Queue (DLQ) table
 
-### 2. Raw JSON
+**Pros:**
+- Typed BigQuery columns for direct querying and partitioning
+- Familiar ETL pattern -- transformation happens in the pipeline
+- Simple BQ queries without JSON path functions
 
-Ingests the entire message payload into a BigQuery `JSON` column.
+**Cons:**
+- Adding or changing a field requires editing the transform code, updating the BQ schema function, modifying the deployment script, and running `ALTER TABLE`
+- Data can be lost if schema changes before the pipeline is updated -- new fields are silently dropped, removed fields cause parsing errors
+- DLQ needed for malformed messages
+
+**When to use:** Small teams with stable schemas, or when you need the simplest possible BigQuery queries and don't expect frequent schema changes.
+
+## Pattern 2: Raw JSON (ELT) -- Recommended
+
+The pipeline ingests the raw JSON payload into a BigQuery `JSON` column with no transformation. All parsing and transformation happens in BigQuery using views, scheduled queries, or `CREATE TABLE AS SELECT`.
 
 ```bash
 ./run_dataflow_json.sh
 ```
 
-- Stores raw payload in a `JSON` column for flexible querying
-- Schema evolution without table updates
-- DLQ table for malformed messages
+**How it works:**
+- Pipeline reads JSON messages from Pub/Sub
+- DoFn validates JSON and stores the raw string in a `payload` column (type `JSON`)
+- No field parsing, no type mapping, no schema awareness in the pipeline
+- BigQuery handles all transformation downstream
 
-### 3. Schema-Driven (Pub/Sub Schema Registry)
+**Pros:**
+- Simplest pipeline code -- no parsing logic, no schema definitions
+- Zero data loss -- raw payload is preserved regardless of upstream schema changes
+- Schema evolution is a BigQuery concern, not a pipeline concern: add a view or scheduled query when the schema changes, and historical data is still accessible
+- Easy replay: re-create views or materialized tables when requirements change
+- Clean separation of concerns: the pipeline delivers data reliably, BigQuery handles transformation
+- No pipeline redeployment needed when the source schema changes
 
-Fetches Avro schema from the Pub/Sub Schema Registry at startup and dynamically generates BigQuery table schema and field extraction logic.
+**Cons:**
+- BigQuery queries require JSON path functions (`JSON_VALUE`, `JSON_QUERY`) to extract fields
+- Slightly higher storage cost (JSON overhead vs typed columns)
+- Requires downstream views or materialized tables for typed access
+
+**When to use:** Most streaming ingestion use cases. Particularly valuable when schemas change frequently, when you need to preserve raw data for audit or reprocessing, or when you want to enforce an ELT pattern where BigQuery is the transformation engine.
+
+**Example: creating a typed view over raw JSON data:**
+
+```sql
+CREATE OR REPLACE VIEW `project.dataset.taxi_events_view` AS
+SELECT
+  subscription_name,
+  message_id,
+  publish_time,
+  processing_time,
+  JSON_VALUE(payload, '$.ride_id') AS ride_id,
+  CAST(JSON_VALUE(payload, '$.point_idx') AS INT64) AS point_idx,
+  CAST(JSON_VALUE(payload, '$.latitude') AS FLOAT64) AS latitude,
+  CAST(JSON_VALUE(payload, '$.longitude') AS FLOAT64) AS longitude,
+  TIMESTAMP(JSON_VALUE(payload, '$.timestamp')) AS timestamp,
+  CAST(JSON_VALUE(payload, '$.meter_reading') AS FLOAT64) AS meter_reading,
+  CAST(JSON_VALUE(payload, '$.meter_increment') AS FLOAT64) AS meter_increment,
+  JSON_VALUE(payload, '$.ride_status') AS ride_status,
+  CAST(JSON_VALUE(payload, '$.passenger_count') AS INT64) AS passenger_count
+FROM `project.dataset.taxi_events_json`;
+```
+
+When the source adds new fields, update the view -- no pipeline changes needed, and all historical raw data is immediately accessible with the new schema.
+
+## Pattern 3: Schema-Driven ETL (Pub/Sub Schema Registry)
+
+The pipeline fetches an Avro schema from the Pub/Sub Schema Registry at startup and dynamically generates both the BigQuery table schema and the field extraction logic. Schema evolution requires zero pipeline code changes -- commit a new schema revision, update the BQ table, and restart the job.
 
 ```bash
 ./run_dataflow_schema_driven.sh
 # In a separate terminal:
-./run_mirror_publisher.sh
+./scripts/run_mirror_publisher.sh
 ```
 
-- Schema registry is the single source of truth
-- Avro schema drives BQ column generation automatically
-- Mirror publisher bridges the public topic to a schema-validated topic (pure pass-through)
-- Custom `iso-datetime` logical type maps ISO 8601 strings to BQ `TIMESTAMP`
-- No DLQ needed -- schema registry validates at publish time
+**How it works:**
+- An Avro schema is registered in the Pub/Sub Schema Registry
+- A mirror publisher bridges the public topic to a schema-validated topic (pure pass-through)
+- Pub/Sub validates every message at publish time -- invalid data is rejected before entering the system
+- The pipeline fetches the Avro schema at startup, generates BQ columns from it, and extracts fields dynamically
+- No DLQ needed because schema validation happens at publish time
 
-For detailed design, schema evolution strategy, and architecture decisions, see [docs/schema_evolution_plan.md](docs/schema_evolution_plan.md).
+**Pros:**
+- Schema registry is the single source of truth -- no hardcoded field lists
+- Schema evolution with zero code changes: commit a new revision, restart the job
+- Publish-time validation prevents bad data from entering the system
+- Schema governance: explicit versioning, revision tracking, cross-team contracts
+- Each BigQuery row records which schema revision validated it (`schema_revision_id`)
 
-## Features
+**Cons:**
+- More infrastructure: schema registry, schema-enabled topic, mirror publisher
+- Still an ETL pattern -- transformation happens in the pipeline, not in BigQuery
+- Mirror publisher required to bridge the public topic to the schema-enabled topic
+- Custom `iso-datetime` logical type needed for ISO 8601 timestamp mapping
 
-- Reads from public Pub/Sub topic (`taxirides-realtime`)
-- Captures Pub/Sub metadata (subscription_name, message_id, publish_time, attributes)
-- Writes to partitioned and clustered BigQuery tables
-- BigQuery Storage Write API with 1-second micro-batching
-- Production deployment via Dataflow (DataflowRunner with Runner V2)
+**When to use:** When schema governance is a requirement (multi-team environments, regulatory compliance), when you need publish-time validation to guarantee data quality, or when you want automatic schema evolution without code changes but prefer typed BigQuery columns over raw JSON.
 
-## Project Structure
-
-```
-dataflow-pubsub-to-bq-examples-py/
-├── README.md
-├── AGENTS.md                              # Guidelines for AI agents
-├── pyproject.toml                         # Project configuration (uv)
-├── run_dataflow.sh                        # Deployment: Standard pipeline
-├── run_dataflow_json.sh                   # Deployment: JSON pipeline
-├── run_dataflow_schema_driven.sh          # Deployment: Schema-driven pipeline
-├── run_mirror_publisher.sh                # Mirror publisher launcher
-├── publish_to_schema_topic.py             # Mirror publisher (pass-through relay)
-├── schemas/
-│   ├── taxi_ride_v1.avsc                  # Avro v1 schema definition
-│   └── generate_bq_schema.py             # BQ schema generator from registry
-├── docs/
-│   └── schema_evolution_plan.md           # Schema evolution design doc
-├── tests/
-│   ├── test_json_to_tablerow.py           # Standard pipeline tests
-│   ├── test_raw_json.py                   # JSON pipeline tests
-│   └── test_schema_driven_to_tablerow.py  # Schema-driven pipeline tests
-└── dataflow_pubsub_to_bq/
-    ├── __init__.py
-    ├── pipeline.py                        # Entry point: Standard
-    ├── pipeline_json.py                   # Entry point: JSON
-    ├── pipeline_schema_driven.py          # Entry point: Schema-driven
-    ├── pipeline_options.py                # Options: Standard + JSON
-    ├── pipeline_schema_driven_options.py  # Options: Schema-driven
-    └── transforms/
-        ├── __init__.py
-        ├── json_to_tablerow.py            # Standard: JSON field extraction
-        ├── raw_json.py                    # JSON: raw payload storage
-        └── schema_driven_to_tablerow.py   # Schema-driven: Avro-based extraction
-```
+For detailed design, schema evolution strategy (v1 to v2), and architecture decisions, see [docs/schema_evolution_plan.md](docs/schema_evolution_plan.md).
 
 ## Input Data Format
 
-The pipelines read taxi ride events from the public Pub/Sub topic with this structure:
+All three pipelines read taxi ride events from the public Pub/Sub topic `projects/pubsub-public-data/topics/taxirides-realtime`:
 
 ```json
 {
@@ -115,63 +149,40 @@ The pipelines read taxi ride events from the public Pub/Sub topic with this stru
 
 The `timestamp` field is an ISO 8601 string with timezone offset.
 
-## BigQuery Output Schema
-
-### Standard Pipeline (`taxi_events`)
+## Project Structure
 
 ```
-subscription_name: STRING
-message_id: STRING
-publish_time: TIMESTAMP (partitioned, clustered)
-processing_time: TIMESTAMP
-ride_id: STRING
-point_idx: INT64
-latitude: FLOAT
-longitude: FLOAT
-timestamp: TIMESTAMP
-meter_reading: FLOAT
-meter_increment: FLOAT
-ride_status: STRING
-passenger_count: INT64
-attributes: STRING
-```
-
-### JSON Pipeline (`taxi_events_json`)
-
-```
-subscription_name: STRING
-message_id: STRING
-publish_time: TIMESTAMP (partitioned, clustered)
-processing_time: TIMESTAMP
-attributes: STRING
-payload: JSON
-```
-
-### Schema-Driven Pipeline (`taxi_events_schema`)
-
-Envelope fields (static) plus dynamic payload fields generated from Avro schema:
-
-```
-# Envelope (always present)
-subscription_name: STRING
-message_id: STRING
-publish_time: TIMESTAMP (partitioned, clustered)
-processing_time: TIMESTAMP
-attributes: STRING
-schema_name: STRING
-schema_revision_id: STRING
-schema_encoding: STRING
-
-# Payload (generated from Avro schema)
-ride_id: STRING
-point_idx: INT64
-latitude: FLOAT64
-longitude: FLOAT64
-timestamp: TIMESTAMP
-meter_reading: FLOAT64
-meter_increment: FLOAT64
-ride_status: STRING
-passenger_count: INT64
+dataflow-pubsub-to-bq-examples-py/
+├── README.md
+├── AGENTS.md                              # Guidelines for AI agents
+├── pyproject.toml                         # Project configuration (uv)
+├── run_dataflow.sh                        # Deployment: Standard ETL
+├── run_dataflow_json.sh                   # Deployment: Raw JSON ELT
+├── run_dataflow_schema_driven.sh          # Deployment: Schema-driven ETL
+├── schemas/
+│   └── taxi_ride_v1.avsc                  # Avro v1 schema definition
+├── scripts/
+│   ├── generate_bq_schema.py             # BQ schema generator from registry
+│   ├── publish_to_schema_topic.py        # Mirror publisher (pass-through relay)
+│   └── run_mirror_publisher.sh           # Mirror publisher launcher
+├── docs/
+│   └── schema_evolution_plan.md           # Schema evolution design doc
+├── tests/
+│   ├── test_json_to_tablerow.py           # Standard pipeline tests
+│   ├── test_raw_json.py                   # JSON pipeline tests
+│   └── test_schema_driven_to_tablerow.py  # Schema-driven pipeline tests
+└── dataflow_pubsub_to_bq/
+    ├── __init__.py
+    ├── pipeline.py                        # Entry point: Standard ETL
+    ├── pipeline_json.py                   # Entry point: Raw JSON ELT
+    ├── pipeline_schema_driven.py          # Entry point: Schema-driven ETL
+    ├── pipeline_options.py                # Options: Standard + JSON
+    ├── pipeline_schema_driven_options.py  # Options: Schema-driven
+    └── transforms/
+        ├── __init__.py
+        ├── json_to_tablerow.py            # Standard: JSON field extraction
+        ├── raw_json.py                    # JSON: raw payload storage
+        └── schema_driven_to_tablerow.py   # Schema-driven: Avro-based extraction
 ```
 
 ## Prerequisites
@@ -213,9 +224,9 @@ Run the pytest suite:
 uv run pytest
 ```
 
-## Production Deployment
+## Deployment
 
-### Standard Flattened Schema
+### Pattern 1: Standard ETL
 
 ```bash
 ./run_dataflow.sh
@@ -223,21 +234,20 @@ uv run pytest
 
 This script will:
 1. Check/create GCS bucket for temp/staging
-2. Check/create BigQuery dataset
-3. Check/create BigQuery table with schema
-4. Check/create Pub/Sub subscription
-5. Install Python dependencies
-6. Submit pipeline to Dataflow with Runner V2
+2. Check/create BigQuery dataset and tables (main + DLQ)
+3. Check/create Pub/Sub subscription
+4. Install Python dependencies and build wheel
+5. Submit pipeline to Dataflow with Runner V2
 
-### Raw JSON Column Schema
+### Pattern 2: Raw JSON ELT
 
 ```bash
 ./run_dataflow_json.sh
 ```
 
-The output table is `taxi_events_json`.
+Same infrastructure setup as Pattern 1. The output table is `taxi_events_json` with a `payload` column of type `JSON`.
 
-### Schema-Driven (Pub/Sub Schema Registry)
+### Pattern 3: Schema-Driven ETL
 
 ```bash
 ./run_dataflow_schema_driven.sh
@@ -246,20 +256,22 @@ The output table is `taxi_events_json`.
 This script will:
 1. Create Pub/Sub schema from `schemas/taxi_ride_v1.avsc` (first run only)
 2. Create schema-enabled topic and subscriptions
-3. Fetch schema from registry and generate BQ table schema
+3. Fetch schema from registry and generate BQ table schema dynamically
 4. Submit pipeline to Dataflow
 
 Then start the mirror publisher in a separate terminal:
 
 ```bash
-./run_mirror_publisher.sh
+./scripts/run_mirror_publisher.sh
 ```
+
+The mirror publisher bridges the public taxi topic to the schema-validated topic. It runs as a separate process and should remain running alongside the Dataflow job.
 
 ## Performance Optimizations
 
 ### BigQuery Storage Write API
 
-This pipeline uses the **BigQuery Storage Write API** for optimal performance:
+All three pipelines use the **BigQuery Storage Write API** for optimal performance:
 
 | Feature | Benefit |
 |---------|---------|
@@ -287,15 +299,14 @@ If you need to use the **legacy STREAMING_INSERTS API** with count-based batchin
 import random
 from apache_beam.transforms.util import GroupIntoBatches
 
-# In pipeline.py
 (messages
  | 'ParseMessages' >> beam.ParDo(
      ParsePubSubMessage(custom_options.subscription_name)
  )
- | 'AddRandomKeys' >> beam.Map(lambda x: (random.randint(0, 4), x))  # 5 shards for parallelism
+ | 'AddRandomKeys' >> beam.Map(lambda x: (random.randint(0, 4), x))
  | 'BatchMessages' >> GroupIntoBatches.WithShardedKey(
-     batch_size=100,  # Flush after 100 records
-     max_buffering_duration_secs=1,  # OR after 1 second
+     batch_size=100,
+     max_buffering_duration_secs=1,
  )
  | 'ExtractBatches' >> beam.FlatMapTuple(lambda k, v: v)
  | 'WriteToBigQuery' >> bigquery.WriteToBigQuery(
@@ -303,7 +314,7 @@ from apache_beam.transforms.util import GroupIntoBatches
      schema={'fields': get_bigquery_schema()},
      write_disposition=bigquery.BigQueryDisposition.WRITE_APPEND,
      create_disposition=bigquery.BigQueryDisposition.CREATE_IF_NEEDED,
-     method=bigquery.WriteToBigQuery.Method.STREAMING_INSERTS,  # Legacy API
+     method=bigquery.WriteToBigQuery.Method.STREAMING_INSERTS,
  ))
 ```
 
@@ -312,13 +323,13 @@ from apache_beam.transforms.util import GroupIntoBatches
 - **Cons:** Higher cost ($0.05/GB vs $0.025/GB), requires sharding for parallelism, more complex code
 - **When to use:** When you need exact count-based triggering or are using legacy systems
 
-**Note:** For production workloads, the Storage Write API is strongly recommended over legacy streaming inserts.
+For production workloads, the Storage Write API is strongly recommended over legacy streaming inserts.
 
 ## Performance Results
 
 ### Production Test Results
 
-Tested with the configuration below, the pipeline achieved excellent performance:
+Tested with the Standard ETL pipeline on the configuration below:
 
 | Metric | Result |
 |--------|--------|
@@ -377,8 +388,7 @@ Key metrics to watch:
 
 ## Configuration
 
-### run_dataflow.sh
-Edit these variables:
+Edit these variables in the `run_dataflow*.sh` scripts:
 - `PROJECT_ID`: Your GCP project ID
 - `REGION`: GCP region for Dataflow job
 - `TEMP_BUCKET`: GCS bucket for temp/staging

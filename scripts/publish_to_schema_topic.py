@@ -7,7 +7,7 @@ string base type, so the ISO 8601 timestamps pass through unchanged. Pub/Sub
 validates each message against the Avro schema at publish time.
 
 Usage:
-    python publish_to_schema_topic.py \
+    python scripts/publish_to_schema_topic.py \
         --project=my-project \
         --source-subscription=projects/my-project/subscriptions/taxi_telemetry_schema_source \
         --target-topic=projects/my-project/topics/taxi_telemetry_schema

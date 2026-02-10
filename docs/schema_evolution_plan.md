@@ -41,13 +41,21 @@ with zero code modifications -- only a job restart.
 
 ## Overview
 
-The existing pipelines in this repository (`pipeline.py`, `pipeline_json.py`) consume from a public
-Pub/Sub topic (`projects/pubsub-public-data/topics/taxirides-realtime`) and parse JSON messages
-in application code. Field extraction and BigQuery schema are hardcoded -- adding a new field
-requires code changes, redeployment, and `ALTER TABLE` on BigQuery.
+This repository demonstrates three streaming ingestion patterns (see [README](../README.md)):
 
-This new pipeline variant (`pipeline_schema_driven.py`) introduces **Pub/Sub Schema Registry**
-with a **schema-driven** architecture:
+1. **Standard ETL** (`pipeline.py`) -- parses JSON fields into typed BQ columns. Simple but
+   schema changes require code changes and redeployment.
+2. **Raw JSON ELT** (`pipeline_json.py`) -- ingests raw payload into a BQ `JSON` column.
+   Recommended for most use cases because it decouples ingestion from transformation and
+   eliminates data loss risk from schema changes.
+3. **Schema-Driven ETL** (`pipeline_schema_driven.py`) -- this document's focus.
+
+The schema-driven pipeline is the right choice when you need **schema governance** (publish-time
+validation, explicit versioning, cross-team contracts) but still want typed BigQuery columns
+rather than raw JSON. If governance is not a requirement, the Raw JSON ELT pattern is simpler
+and more resilient to schema changes.
+
+This pipeline variant introduces **Pub/Sub Schema Registry** with a **schema-driven** architecture:
 
 - An Avro schema defines the message contract in the Pub/Sub Schema Registry.
 - Pub/Sub validates every message at **publish time** -- bad data is rejected before entering
@@ -232,7 +240,7 @@ updates the BQ table with `bq update --schema=...` to add any new columns. This 
 
 ### Mirror Publisher
 
-File: `publish_to_schema_topic.py`
+File: `scripts/publish_to_schema_topic.py`
 
 A standalone Python script that acts as a **pure pass-through relay**:
 
@@ -357,7 +365,7 @@ v2 adds:
 
 Table is partitioned on `publish_time` (DAY) and clustered on `publish_time`.
 
-### Files to Create
+### File Inventory
 
 | File | Purpose |
 |---|---|
@@ -365,7 +373,9 @@ Table is partitioned on `publish_time` (DAY) and clustered on `publish_time`.
 | `dataflow_pubsub_to_bq/pipeline_schema_driven.py` | Pipeline entry point: fetches schema from registry, dynamic BQ schema + extraction |
 | `dataflow_pubsub_to_bq/pipeline_schema_driven_options.py` | Pipeline options: adds `--pubsub_schema` |
 | `dataflow_pubsub_to_bq/transforms/schema_driven_to_tablerow.py` | DoFn + Avro-to-BQ type mapper + envelope schema |
-| `publish_to_schema_topic.py` | Mirror publisher (pure pass-through relay) |
+| `scripts/publish_to_schema_topic.py` | Mirror publisher (pure pass-through relay) |
+| `scripts/generate_bq_schema.py` | BQ schema generator from Pub/Sub Schema Registry |
+| `scripts/run_mirror_publisher.sh` | Mirror publisher launcher script |
 | `run_dataflow_schema_driven.sh` | End-to-end deployment script (fetches schema from registry for BQ table) |
 | `tests/test_schema_driven_to_tablerow.py` | Unit tests for dynamic extraction and type mapping |
 
@@ -459,7 +469,7 @@ gcloud pubsub subscriptions create taxi_telemetry_schema_v2_source \
     --message-transform='javascriptUdf={code="function enrichTaxiRide(message, metadata) { const data = JSON.parse(message.data); data.enrichment_timestamp = Date.now(); data.region = \"test\"; message.data = JSON.stringify(data); return message; }",functionName="enrichTaxiRide"}'
 
 # Attempt to publish a v2 message (schema is still v1-only)
-python publish_to_schema_topic.py \
+python scripts/publish_to_schema_topic.py \
     --project=${PROJECT_ID} \
     --source-subscription=taxi_telemetry_schema_v2_source \
     --target-topic=${SCHEMA_TOPIC_NAME}
@@ -523,7 +533,7 @@ instead of 9, purely driven by the schema registry content.
 Run a second instance of the mirror publisher pointing at Subscription B (created in Step 0):
 
 ```bash
-python publish_to_schema_topic.py \
+python scripts/publish_to_schema_topic.py \
     --project=${PROJECT_ID} \
     --source-subscription=taxi_telemetry_schema_v2_source \
     --target-topic=${SCHEMA_TOPIC_NAME}
@@ -680,25 +690,37 @@ process. You must declare the new format (commit revision) and authorize it on t
 
 ## Key Design Decisions
 
-### Why Schema-Driven (Not Hardcoded)
+### Why Schema-Driven (Not Hardcoded or Raw JSON)
 
-The existing `pipeline.py` uses hardcoded `.get()` calls and a hardcoded BQ schema function.
-Adding a new field requires editing the transform, the schema function, the run script, and
-the BQ table. This pipeline variant eliminates all of that.
+This repository provides three ingestion patterns. The schema-driven pipeline occupies a
+specific niche between the other two:
 
-| Aspect | `pipeline.py` (hardcoded) | `pipeline_schema_driven.py` |
-|---|---|---|
-| Field extraction | Hardcoded `.get()` calls per field | Dynamic loop over schema field names |
-| BQ schema | Hardcoded `get_bigquery_schema()` | Generated from Avro at startup |
-| v2 code changes | Edit transform + schema function | None -- re-run same script |
-| Source of truth | Python code | Pub/Sub Schema Registry |
-| BQ table update | Manual `ALTER TABLE` | Script auto-updates via `bq update` |
-| Demo value | Simple Pub/Sub consumption | Zero-code schema evolution |
+| Aspect | Standard ETL | Raw JSON ELT | Schema-Driven ETL |
+|---|---|---|---|
+| Field extraction | Hardcoded `.get()` calls | None (raw payload) | Dynamic loop over schema fields |
+| BQ schema | Hardcoded function | Single `JSON` column | Generated from Avro at startup |
+| Schema change impact | Code + deploy + ALTER TABLE | None | Job restart only |
+| Source of truth | Python code | N/A | Pub/Sub Schema Registry |
+| Data loss risk | Possible | None | None |
+| Publish-time validation | No | No | Yes |
+| BQ query complexity | Low | Medium (JSON functions) | Low |
 
-Both pipelines coexist in the repo as different demo use cases:
-- `pipeline.py` + `run_dataflow.sh`: Simple Pub/Sub to BQ with manual parsing.
-- `pipeline_schema_driven.py` + `run_dataflow_schema_driven.sh`: Schema registry with
-  automatic adaptation.
+**When to use Raw JSON (ELT) instead:** For most streaming ingestion use cases, the Raw JSON
+ELT pattern (`pipeline_json.py`) is simpler and more resilient. It decouples ingestion from
+transformation, preserves raw data, and handles schema changes with zero pipeline impact.
+Schema evolution becomes a BigQuery concern (update views or scheduled queries) rather than a
+pipeline concern. See the [README](../README.md) for a full comparison.
+
+**When to use Schema-Driven instead:** When schema governance is a hard requirement --
+multi-team environments where producers and consumers need a formal contract, regulatory
+compliance requiring publish-time validation, or when you want typed BigQuery columns with
+automatic schema evolution and zero code changes on the pipeline side.
+
+All three pipelines coexist in the repo as different ingestion patterns:
+- `pipeline.py` + `run_dataflow.sh`: Standard ETL with manual parsing.
+- `pipeline_json.py` + `run_dataflow_json.sh`: Raw JSON ELT (recommended default).
+- `pipeline_schema_driven.py` + `run_dataflow_schema_driven.sh`: Schema-driven ETL with
+  registry governance.
 
 ### Why Avro Over Protocol Buffers
 

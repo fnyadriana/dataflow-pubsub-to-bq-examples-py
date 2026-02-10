@@ -8,7 +8,7 @@ Diagnostic messages go to stderr so the shell script can capture only the
 schema string.
 
 Usage:
-    python schemas/generate_bq_schema.py \
+    python scripts/generate_bq_schema.py \
         --schema=projects/PROJECT/schemas/SCHEMA_NAME
 """
 

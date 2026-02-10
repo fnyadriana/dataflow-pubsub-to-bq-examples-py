@@ -107,7 +107,7 @@ fi
 # 7. Generate BQ schema from Pub/Sub Schema Registry (NOT from local .avsc file)
 echo ""
 echo "Fetching schema from registry and generating BQ schema..."
-BQ_SCHEMA_LINE=$(uv run python schemas/generate_bq_schema.py --schema="${FULL_SCHEMA}")
+BQ_SCHEMA_LINE=$(uv run python scripts/generate_bq_schema.py --schema="${FULL_SCHEMA}")
 echo "BQ schema: ${BQ_SCHEMA_LINE}"
 echo ""
 
@@ -171,5 +171,5 @@ echo "View job at:"
 echo "https://console.cloud.google.com/dataflow/jobs/${REGION}/${JOB_NAME}?project=${PROJECT_ID}"
 echo ""
 echo "Remember to start the mirror publisher in a separate terminal:"
-echo "  ./run_mirror_publisher.sh"
+echo "  ./scripts/run_mirror_publisher.sh"
 echo ""

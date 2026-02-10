@@ -3,7 +3,10 @@ import apache_beam as beam
 from apache_beam.io.gcp.pubsub import PubsubMessage
 from apache_beam.testing.test_pipeline import TestPipeline
 from apache_beam.testing.util import assert_that, is_empty
-from dataflow_pubsub_to_bq.transforms.json_to_tablerow import ParsePubSubMessage
+from dataflow_pubsub_to_bq.transforms.json_to_tablerow import (
+    ParsePubSubMessage,
+    get_bigquery_schema,
+)
 
 
 # Define a custom matcher for DLQ content
@@ -83,3 +86,33 @@ def test_process_malformed_message():
 
         # Check DLQ output
         assert_that(results.dlq, matches_dlq_error(invalid_json), label="CheckDLQ")
+
+
+def test_get_bigquery_schema():
+    """Tests that get_bigquery_schema returns expected field definitions."""
+    schema = get_bigquery_schema()
+    field_names = [f["name"] for f in schema]
+
+    # 14 fields: 4 metadata + 9 taxi ride + 1 attributes
+    assert len(schema) == 14
+    assert "subscription_name" in field_names
+    assert "message_id" in field_names
+    assert "publish_time" in field_names
+    assert "processing_time" in field_names
+    assert "ride_id" in field_names
+    assert "point_idx" in field_names
+    assert "latitude" in field_names
+    assert "longitude" in field_names
+    assert "timestamp" in field_names
+    assert "meter_reading" in field_names
+    assert "meter_increment" in field_names
+    assert "ride_status" in field_names
+    assert "passenger_count" in field_names
+    assert "attributes" in field_names
+
+    # Verify key type mappings
+    field_map = {f["name"]: f for f in schema}
+    assert field_map["publish_time"]["type"] == "TIMESTAMP"
+    assert field_map["ride_id"]["type"] == "STRING"
+    assert field_map["point_idx"]["type"] == "INT64"
+    assert field_map["timestamp"]["type"] == "TIMESTAMP"

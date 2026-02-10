@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 
 import apache_beam as beam
+import pytest
 from apache_beam.io.gcp.pubsub import PubsubMessage
 from apache_beam.testing.test_pipeline import TestPipeline
 from apache_beam.testing.util import assert_that
@@ -355,5 +356,141 @@ def test_parse_only_extracts_schema_fields():
             row = elements[0]
             assert "unexpected_field" not in row
             assert row["ride_id"] == "abc-123"
+
+        assert_that(results, check_output)
+
+
+def test_parse_valid_v2_message_with_enrichment():
+    """Tests that a v2 message with enrichment fields produces correct output."""
+    iso_ts = "2025-01-15T05:45:49.168000-05:00"
+    enrichment_ts = "2025-01-15T10:46:00.000000Z"
+    payload = {
+        "ride_id": "v2-ride-001",
+        "point_idx": 10,
+        "latitude": 40.81,
+        "longitude": -73.95,
+        "timestamp": iso_ts,
+        "meter_reading": 8.5,
+        "meter_increment": 0.15,
+        "ride_status": "enroute",
+        "passenger_count": 3,
+        "enrichment_timestamp": enrichment_ts,
+        "region": "north",
+    }
+    message = PubsubMessage(
+        data=json.dumps(payload).encode("utf-8"),
+        attributes={
+            "googclient_schemaname": "projects/test/schemas/taxi-ride-schema",
+            "googclient_schemarevisionid": "v2rev123",
+            "googclient_schemaencoding": "JSON",
+        },
+    )
+
+    _, field_names, timestamp_fields = avro_to_bq_schema(V2_SCHEMA)
+
+    expected_ride_ts = datetime.fromisoformat(iso_ts).timestamp()
+    expected_enrich_ts = datetime.fromisoformat(enrichment_ts).timestamp()
+
+    with TestPipeline() as p:
+        results = (
+            p
+            | beam.Create([message])
+            | beam.ParDo(
+                ParseSchemaDrivenMessage("test_sub", field_names, timestamp_fields)
+            )
+        )
+
+        def check_output(elements):
+            assert len(elements) == 1
+            row = elements[0]
+            # Envelope
+            assert row["schema_revision_id"] == "v2rev123"
+            # v1 fields
+            assert row["ride_id"] == "v2-ride-001"
+            assert row["passenger_count"] == 3
+            assert row["timestamp"] == Timestamp.of(expected_ride_ts)
+            # v2 enrichment fields
+            assert row["enrichment_timestamp"] == Timestamp.of(expected_enrich_ts)
+            assert row["region"] == "north"
+
+        assert_that(results, check_output)
+
+
+def test_avro_to_bq_schema_unsupported_primitive_raises():
+    """Tests that an unsupported Avro primitive type raises ValueError."""
+    schema = json.dumps(
+        {
+            "type": "record",
+            "name": "Test",
+            "fields": [
+                {"name": "data", "type": "fixed"},
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="Unsupported Avro primitive type: fixed"):
+        avro_to_bq_schema(schema)
+
+
+def test_avro_to_bq_schema_unsupported_union_raises():
+    """Tests that a multi-type union raises ValueError."""
+    schema = json.dumps(
+        {
+            "type": "record",
+            "name": "Test",
+            "fields": [
+                {
+                    "name": "ambiguous",
+                    "type": ["null", "string", "int"],
+                    "default": None,
+                },
+            ],
+        }
+    )
+    with pytest.raises(ValueError, match="Unsupported union type"):
+        avro_to_bq_schema(schema)
+
+
+def test_parse_epoch_millis_timestamp_conversion():
+    """Tests that epoch milliseconds are converted to Beam Timestamp."""
+    # Schema with timestamp-millis logical type
+    schema = json.dumps(
+        {
+            "type": "record",
+            "name": "Test",
+            "fields": [
+                {
+                    "name": "event_time",
+                    "type": {
+                        "type": "long",
+                        "logicalType": "timestamp-millis",
+                    },
+                },
+            ],
+        }
+    )
+    _, field_names, timestamp_fields = avro_to_bq_schema(schema)
+
+    # 1737000000000 ms = 1737000000.0 seconds
+    epoch_millis = 1737000000000
+    payload = {"event_time": epoch_millis}
+    message = PubsubMessage(
+        data=json.dumps(payload).encode("utf-8"),
+        attributes={},
+    )
+
+    with TestPipeline() as p:
+        results = (
+            p
+            | beam.Create([message])
+            | beam.ParDo(
+                ParseSchemaDrivenMessage("test_sub", field_names, timestamp_fields)
+            )
+        )
+
+        def check_output(elements):
+            assert len(elements) == 1
+            row = elements[0]
+            # epoch_millis / 1000.0 = 1737000000.0
+            assert row["event_time"] == Timestamp.of(1737000000.0)
 
         assert_that(results, check_output)

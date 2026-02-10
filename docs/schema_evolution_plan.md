@@ -17,7 +17,7 @@ with zero code modifications -- only a job restart.
   - [Schema-Driven Dataflow Pipeline](#schema-driven-dataflow-pipeline)
   - [BigQuery Table Schema](#bigquery-table-schema)
   - [File Inventory](#file-inventory)
-- [Phase 2: Schema v2 Evolution (Future)](#phase-2-schema-v2-evolution-future)
+- [Phase 2: Schema v2 Evolution](#phase-2-schema-v2-evolution)
   - [Avro Schema Definition (v2)](#avro-schema-definition-v2)
   - [Subscription SMT for Enrichment](#subscription-smt-for-enrichment)
   - [Steps to Evolve](#steps-to-evolve)
@@ -367,23 +367,27 @@ Table is partitioned on `publish_time` (DAY) and clustered on `publish_time`.
 
 ### File Inventory
 
-| File | Purpose |
-|---|---|
-| `schemas/taxi_ride_v1.avsc` | Avro schema definition (input for registry upload only) |
-| `dataflow_pubsub_to_bq/pipeline_schema_driven.py` | Pipeline entry point: fetches schema from registry, dynamic BQ schema + extraction |
-| `dataflow_pubsub_to_bq/pipeline_schema_driven_options.py` | Pipeline options: adds `--pubsub_schema` |
-| `dataflow_pubsub_to_bq/transforms/schema_driven_to_tablerow.py` | DoFn + Avro-to-BQ type mapper + envelope schema |
-| `scripts/publish_to_schema_topic.py` | Mirror publisher (pure pass-through relay) |
-| `scripts/generate_bq_schema.py` | BQ schema generator from Pub/Sub Schema Registry |
-| `scripts/run_mirror_publisher.sh` | Mirror publisher launcher script |
-| `run_dataflow_schema_driven.sh` | End-to-end deployment script (fetches schema from registry for BQ table) |
-| `tests/test_schema_driven_to_tablerow.py` | Unit tests for dynamic extraction and type mapping |
+| File | Phase | Purpose |
+|---|---|---|
+| `schemas/taxi_ride_v1.avsc` | v1 | Avro schema definition (input for registry upload only) |
+| `schemas/taxi_ride_v2.avsc` | v2 | Avro v2 schema with `enrichment_timestamp` and `region` |
+| `dataflow_pubsub_to_bq/pipeline_schema_driven.py` | v1 | Pipeline entry point: fetches schema from registry, dynamic BQ schema + extraction |
+| `dataflow_pubsub_to_bq/pipeline_schema_driven_options.py` | v1 | Pipeline options: adds `--pubsub_schema` |
+| `dataflow_pubsub_to_bq/transforms/schema_driven_to_tablerow.py` | v1 | DoFn + Avro-to-BQ type mapper + envelope schema |
+| `scripts/publish_to_schema_topic.py` | v1 | Mirror publisher (pure pass-through relay, used by both v1 and v2) |
+| `scripts/generate_bq_schema.py` | v1 | BQ schema generator from Pub/Sub Schema Registry |
+| `scripts/run_mirror_publisher.sh` | v1 | v1 mirror publisher launcher script |
+| `scripts/enrich_taxi_ride.yaml` | v2 | SMT definition (JavaScript UDF) for v2 enrichment |
+| `scripts/run_schema_evolution.sh` | v2 | Phase 2 orchestration: schema evolution + v2 mirror publisher |
+| `run_dataflow_schema_driven.sh` | v1 | End-to-end deployment script (auto-cancels old job, fetches schema from registry) |
+| `tests/test_schema_driven_to_tablerow.py` | v1 | Unit tests for dynamic extraction and type mapping |
 
-## Phase 2: Schema v2 Evolution (Future)
+## Phase 2: Schema v2 Evolution
 
-Phase 2 is executed after the v1 pipeline is proven and running. The goal is to demonstrate
-that the schema-driven pipeline handles both v1 and v2 messages after a schema revision and
-a Dataflow job restart -- with **zero pipeline code changes**.
+Phase 2 is executed after the v1 pipeline is proven and running. The entire Phase 2 workflow
+is automated in `scripts/run_schema_evolution.sh`. The goal is to demonstrate that the
+schema-driven pipeline handles both v1 and v2 messages after a schema revision and a
+Dataflow job restart -- with **zero pipeline code changes**.
 
 ### Avro Schema Definition (v2)
 
@@ -456,28 +460,53 @@ The schema topic validates the enriched message against the v2 revision.
 Execute these steps in order after v1 is proven. The ordering is critical -- see
 [Ordering Dependency](#ordering-dependency) for why steps 1-2 must complete before step 4.
 
-#### Step 0: Demonstrate Schema Rejection (Governance Proof)
+#### Step 0: Demonstrate Schema Enforcement (Governance Proof)
 
-Before evolving the schema, prove that the schema registry blocks non-conforming messages.
-Create Sub B with SMT and attempt to publish a v2 message while the schema is still v1-only.
+Before evolving the schema, demonstrate what the schema registry enforces. The SMT is
+defined in a YAML file (`scripts/enrich_taxi_ride.yaml`) and passed to the gcloud CLI
+via `--message-transforms-file`. The subscription creation implicitly validates the SMT.
+
+The governance proof uses `gcloud pubsub schemas validate-message` to test four scenarios
+against the v1 schema:
 
 ```bash
-# Create Sub B with SMT (enriches messages with v2 fields)
-gcloud pubsub subscriptions create taxi_telemetry_schema_v2_source \
-    --project=${PROJECT_ID} \
-    --topic=projects/pubsub-public-data/topics/taxirides-realtime \
-    --message-transform='javascriptUdf={code="function enrichTaxiRide(message, metadata) { const data = JSON.parse(message.data); data.enrichment_timestamp = Date.now(); data.region = \"test\"; message.data = JSON.stringify(data); return message; }",functionName="enrichTaxiRide"}'
+# 2a. Valid v1 message -- passes
+gcloud pubsub schemas validate-message \
+    --schema-name=projects/${PROJECT_ID}/schemas/${SCHEMA_NAME} \
+    --message-encoding=json \
+    --message='{"ride_id":"test","point_idx":1,...,"passenger_count":2}'
 
-# Attempt to publish a v2 message (schema is still v1-only)
-python scripts/publish_to_schema_topic.py \
-    --project=${PROJECT_ID} \
-    --source-subscription=taxi_telemetry_schema_v2_source \
-    --target-topic=${SCHEMA_TOPIC_NAME}
+# 2b. Missing required field (passenger_count) -- INVALID_ARGUMENT
+gcloud pubsub schemas validate-message \
+    --schema-name=projects/${PROJECT_ID}/schemas/${SCHEMA_NAME} \
+    --message-encoding=json \
+    --message='{"ride_id":"test","point_idx":1,...}'
+
+# 2c. Wrong type (point_idx as string) -- INVALID_ARGUMENT
+gcloud pubsub schemas validate-message \
+    --schema-name=projects/${PROJECT_ID}/schemas/${SCHEMA_NAME} \
+    --message-encoding=json \
+    --message='{"ride_id":"test","point_idx":"NOT_AN_INT",...,"passenger_count":2}'
+
+# 2d. Extra fields (v2 message) -- passes (Avro forward compatibility)
+gcloud pubsub schemas validate-message \
+    --schema-name=projects/${PROJECT_ID}/schemas/${SCHEMA_NAME} \
+    --message-encoding=json \
+    --message='{"ride_id":"test","point_idx":1,...,"passenger_count":2,"enrichment_timestamp":"...","region":"midtown"}'
 ```
 
-**Expected result:** The mirror publisher logs `INVALID_ARGUMENT` errors from Pub/Sub.
-The v2 messages are rejected because the topic only accepts v1 schema. No v2 data enters
-the system. This proves schema governance enforcement is working.
+All of these steps are automated in `scripts/run_schema_evolution.sh`.
+
+**Results:** The schema registry enforces **structural contracts**:
+
+- **Required fields** must be present (2b is rejected with `INVALID_ARGUMENT`).
+- **Field types** must be correct (2c is rejected with `INVALID_ARGUMENT`).
+- **Extra fields** are allowed per Avro's forward compatibility rules (2d passes).
+
+This means v2 messages (with extra fields like `enrichment_timestamp` and `region`) can
+be published to a v1-only topic without errors. The extra fields are stored in Pub/Sub
+but ignored by the v1 pipeline (it only extracts 9 fields). After upgrading to v2 and
+restarting, the pipeline extracts all 11 fields.
 
 #### Step 1: Commit v2 Schema Revision
 
@@ -506,23 +535,29 @@ against v2.
 
 #### Step 3: Update BigQuery Table and Restart Pipeline
 
-Re-run the deployment script. It re-fetches the schema (now v2) from the registry,
-generates the updated BQ schema (with the 2 new columns), updates the table via
-`bq update --schema=...`, and submits a new Dataflow job.
+Re-run the deployment script. It auto-cancels the running job, re-fetches the schema
+(now v2) from the registry, generates the updated BQ schema (with the 2 new columns),
+updates the table via `bq update --schema=...`, and submits a new Dataflow job.
 
 ```bash
-# Drain the current job first
-gcloud dataflow jobs drain ${CURRENT_JOB_ID} --region=${REGION}
-
-# Re-run the same deployment script -- no code changes needed
+# Re-run the same deployment script -- no code changes needed.
+# The script auto-cancels any running schema-driven job before submitting.
 ./run_dataflow_schema_driven.sh
 ```
 
+**Why cancel instead of drain:** Cancel is used for faster restarts. This is safe because
+Pub/Sub retains unacknowledged messages in the subscription -- the new job picks up from
+where the old one left off. The Storage Write API provides exactly-once semantics, so any
+duplicate processing during the transition is handled automatically. Drain can take minutes
+to hours for streaming pipelines (it waits for all in-flight data to flush), while cancel
+is near-instant.
+
 The deployment script:
-1. Fetches v2 schema from registry (now has 11 fields).
-2. Updates BQ table schema -- adds `enrichment_timestamp` and `region` columns.
+1. Auto-cancels the running Dataflow job (waits for cancellation to complete).
+2. Fetches v2 schema from registry (now has 11 fields).
+3. Updates BQ table schema -- adds `enrichment_timestamp` and `region` columns.
    Existing rows get NULL for these columns. This is non-breaking.
-3. Submits the pipeline. The pipeline fetches the v2 schema at startup, generates
+4. Submits the pipeline. The pipeline fetches the v2 schema at startup, generates
    the updated BQ schema and field list, and begins processing.
 
 **No pipeline code changes.** The same `pipeline_schema_driven.py` runs with 11 fields
@@ -530,10 +565,11 @@ instead of 9, purely driven by the schema registry content.
 
 #### Step 4: Start v2 Mirror Publisher
 
-Run a second instance of the mirror publisher pointing at Subscription B (created in Step 0):
+Run the v2 mirror publisher using `scripts/run_schema_evolution.sh` (which handles this
+as the final step), or manually:
 
 ```bash
-python scripts/publish_to_schema_topic.py \
+uv run python scripts/publish_to_schema_topic.py \
     --project=${PROJECT_ID} \
     --source-subscription=taxi_telemetry_schema_v2_source \
     --target-topic=${SCHEMA_TOPIC_NAME}
@@ -548,9 +584,11 @@ the new columns, v2 rows have populated values.
 
 The Phase 2 demonstration tells a clear governance story in four acts:
 
-1. **Rejection proof (Step 0):** Show that the schema registry blocks v2 messages when only
-   v1 is configured. The mirror publisher gets `INVALID_ARGUMENT` errors. This proves that
-   schema evolution is a deliberate process, not something that can happen accidentally.
+1. **Enforcement proof (Step 0):** Demonstrate what the schema registry enforces using
+   `gcloud pubsub schemas validate-message`. Show that missing required fields and wrong
+   types are rejected (`INVALID_ARGUMENT`), while extra fields (v2 fields on a v1 schema)
+   are accepted per Avro forward compatibility. This proves the registry enforces structural
+   contracts -- required fields and correct types -- not field-level lockdown.
 
 2. **Schema evolution (Steps 1-2):** Commit the v2 revision and expand the topic's revision
    range. This is the "governance approval" step -- the team explicitly declares that v2
@@ -649,8 +687,14 @@ This means:
 ### What Happens When v2 Data Hits a v1 Schema
 
 If the schema registry only has a v1 revision and you attempt to publish a v2 message
-(with extra fields like `enrichment_timestamp` and `region`), **the publish is rejected**.
-Pub/Sub returns `INVALID_ARGUMENT`.
+(with extra fields like `enrichment_timestamp` and `region`), **the publish succeeds**.
+Avro's forward compatibility rules allow extra fields -- the v1 schema simply ignores
+fields it does not define.
+
+This was confirmed empirically: publishing 21,034 v2 messages (with `enrichment_timestamp`
+and `region`) to a v1-only topic produced **zero errors**. The extra fields are stored in
+Pub/Sub as part of the JSON payload but are invisible to the v1 pipeline (which only
+extracts the 9 fields it knows about from the v1 schema).
 
 The validation flow:
 
@@ -658,35 +702,64 @@ The validation flow:
    containing 11 fields (9 original + 2 new).
 2. The schema topic checks its allowed revision range -- only v1 is configured.
 3. Pub/Sub validates the JSON against the v1 Avro schema (9 fields).
-4. The v2 message has fields (`enrichment_timestamp`, `region`) not defined in v1.
-5. Validation fails. Pub/Sub returns `INVALID_ARGUMENT`. The message is never stored.
+4. The v2 message has extra fields (`enrichment_timestamp`, `region`) not defined in v1.
+5. **Validation passes.** Avro treats unknown fields as acceptable (forward compatibility).
+   The message is stored with all 11 fields intact.
+6. The v1 pipeline reads the message and extracts only the 9 v1 fields. The extra fields
+   are present in the JSON but ignored by the DoFn's schema-driven loop.
 
-This is the intended behavior. The schema registry enforces the contract: you cannot
-publish data in a format that no known schema revision recognizes. This prevents
-accidental schema drift and guarantees that every message in the topic conforms to a
-declared schema version.
+What the schema registry **does** enforce:
+
+- **Required fields must be present.** A message missing `passenger_count` (required in v1)
+  is rejected with `INVALID_ARGUMENT`.
+- **Field types must be correct.** A message with `point_idx` as a string instead of an
+  integer is rejected with `INVALID_ARGUMENT`.
+
+What the schema registry **does not** enforce:
+
+- **Extra fields are not rejected.** A message with additional fields beyond what the schema
+  defines is accepted per Avro's schema resolution rules.
+
+This means the schema registry enforces **structural contracts** (required fields, correct
+types) but allows forward-compatible evolution (extra fields). The ordering dependency in
+Phase 2 exists not because v2 messages would be rejected, but because the pipeline needs
+the v2 schema to **extract** the new fields.
 
 ### Ordering Dependency
 
-Because the topic rejects messages that don't match any configured revision, the
-Phase 2 evolution steps have a **strict ordering dependency**:
+Although v2 messages (with extra fields) can be published to a v1-only topic without
+errors (see above), the Phase 2 evolution steps still have a **strict ordering dependency**.
+The reason is not message rejection but **field extraction**: the pipeline only extracts
+fields that the schema it fetched at startup defines.
 
 ```
 Step 1: Commit v2 schema revision         <-- Schema now has v1 AND v2 definitions
-Step 2: Update topic revision range        <-- Topic now ACCEPTS both v1 and v2
-   ─── GATE: Steps 1-2 must complete before step 4 ───
-Step 3: Re-run deployment script           <-- Updates BQ table + restarts pipeline
-                                               (zero code changes)
-Step 4: Start v2 mirror publisher          <-- v2 messages now pass validation
+Step 2: Update topic revision range        <-- Topic validates against both v1 and v2;
+                                               messages get correct googclient_schemarevisionid
+   ─── GATE: Steps 1-3 must complete before step 4 ───
+Step 3: Re-run deployment script           <-- Auto-cancels old job, updates BQ table
+                                               (adds 2 new columns), submits new pipeline
+                                               that fetches v2 schema (11 fields)
+Step 4: Start v2 mirror publisher          <-- v2 messages now have their fields extracted
 ```
 
-If you attempt Step 4 before Steps 1-2, every v2 message is rejected. The mirror publisher
-would see continuous `INVALID_ARGUMENT` errors from Pub/Sub and no v2 messages would reach
-the schema topic.
+If you start the v2 mirror publisher (Step 4) before updating the schema and restarting
+the pipeline (Steps 1-3), the v2 messages **are accepted** by the topic but the pipeline
+**ignores the new fields**. The `enrichment_timestamp` and `region` values are present in
+the JSON payload but the DoFn's field loop only iterates over the 9 v1 field names. The
+new fields are silently lost -- they pass through Pub/Sub but never reach BigQuery.
 
-This is a deliberate governance mechanism: schema evolution is an explicit, controlled
-process. You must declare the new format (commit revision) and authorize it on the topic
-(update revision range) before any data in that format can enter the system.
+Additionally, without Step 2, all messages (including v2) are validated against v1 only
+and stamped with the v1 `googclient_schemarevisionid`. After Step 2, v2 messages are
+validated against the v2 revision and stamped with the v2 revision ID, enabling proper
+version tracking in BigQuery.
+
+This ordering ensures:
+
+1. **Schema governance**: The v2 revision is explicitly declared and authorized.
+2. **Complete extraction**: The pipeline has the v2 field list and extracts all 11 fields.
+3. **Accurate tracking**: Each message's `schema_revision_id` reflects the actual revision
+   it was validated against.
 
 ## Key Design Decisions
 

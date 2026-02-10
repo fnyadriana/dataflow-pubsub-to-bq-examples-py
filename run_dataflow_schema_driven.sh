@@ -140,7 +140,45 @@ uv build --wheel
 WHEEL_FILE=$(ls -t dist/*.whl | head -1)
 echo "Built wheel: ${WHEEL_FILE}"
 
-# 11. Submit pipeline to Dataflow
+# 11. Auto-cancel any running schema-driven job
+#
+# Cancel is used instead of drain for faster restarts. This is safe because:
+#   - Pub/Sub retains unacknowledged messages in the subscription
+#   - The new job picks up from where the old one left off
+#   - Storage Write API provides exactly-once semantics
+echo ""
+echo "Checking for existing schema-driven jobs..."
+CURRENT_JOB_ID=$(gcloud dataflow jobs list \
+    --region="${REGION}" \
+    --project="${PROJECT_ID}" \
+    --filter="name~dataflow-schema-driven AND state=Running" \
+    --format="value(id)" \
+    --limit=1 2>/dev/null || true)
+
+if [ -n "${CURRENT_JOB_ID}" ]; then
+    echo "Found running job: ${CURRENT_JOB_ID}"
+    echo "Cancelling..."
+    gcloud dataflow jobs cancel "${CURRENT_JOB_ID}" \
+        --region="${REGION}" \
+        --project="${PROJECT_ID}"
+    echo "Waiting for cancellation to complete..."
+    while true; do
+        STATE=$(gcloud dataflow jobs describe "${CURRENT_JOB_ID}" \
+            --region="${REGION}" \
+            --project="${PROJECT_ID}" \
+            --format="value(currentState)" 2>/dev/null || true)
+        if [[ "${STATE}" != "JOB_STATE_RUNNING" && "${STATE}" != "JOB_STATE_CANCELLING" ]]; then
+            echo "Job cancelled (state: ${STATE})."
+            break
+        fi
+        echo "  Still cancelling (state: ${STATE})..."
+        sleep 5
+    done
+else
+    echo "No existing schema-driven jobs found."
+fi
+
+# 12. Submit pipeline to Dataflow
 echo ""
 echo "Submitting schema-driven pipeline to Dataflow..."
 uv run python -m dataflow_pubsub_to_bq.pipeline_schema_driven \

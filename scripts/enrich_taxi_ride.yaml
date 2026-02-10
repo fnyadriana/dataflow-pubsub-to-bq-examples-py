@@ -1,0 +1,16 @@
+- javascriptUdf:
+    code: >
+        function enrichTaxiRide(message, metadata) {
+          const data = JSON.parse(message.data);
+          data.enrichment_timestamp = new Date().toISOString();
+          if (data.latitude > 40.8) {
+            data.region = "north";
+          } else if (data.latitude > 40.75) {
+            data.region = "midtown";
+          } else {
+            data.region = "downtown";
+          }
+          message.data = JSON.stringify(data);
+          return message;
+        }
+    functionName: enrichTaxiRide

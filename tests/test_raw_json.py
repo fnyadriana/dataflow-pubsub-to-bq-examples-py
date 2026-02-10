@@ -3,7 +3,11 @@ import apache_beam as beam
 from apache_beam.io.gcp.pubsub import PubsubMessage
 from apache_beam.testing.test_pipeline import TestPipeline
 from apache_beam.testing.util import assert_that, is_empty
-from dataflow_pubsub_to_bq.transforms.raw_json import ParsePubSubMessageToRawJson
+from dataflow_pubsub_to_bq.transforms.raw_json import (
+    ParsePubSubMessageToRawJson,
+    get_dead_letter_bigquery_schema,
+    get_raw_json_bigquery_schema,
+)
 
 
 # Define a custom matcher for DLQ content since timestamps/stacktraces vary
@@ -103,3 +107,48 @@ def test_process_preserves_raw_formatting():
             and elements[0]["payload"] == raw_payload,
             label="CheckRawPreservation",
         )
+
+
+def test_get_raw_json_bigquery_schema():
+    """Tests that get_raw_json_bigquery_schema returns expected 6-field schema."""
+    schema = get_raw_json_bigquery_schema()
+    field_names = [f["name"] for f in schema]
+
+    assert len(schema) == 6
+    assert field_names == [
+        "subscription_name",
+        "message_id",
+        "publish_time",
+        "processing_time",
+        "attributes",
+        "payload",
+    ]
+
+    # Verify key type mappings
+    field_map = {f["name"]: f for f in schema}
+    assert field_map["publish_time"]["type"] == "TIMESTAMP"
+    assert field_map["processing_time"]["type"] == "TIMESTAMP"
+    assert field_map["payload"]["type"] == "STRING"
+    assert field_map["subscription_name"]["type"] == "STRING"
+
+
+def test_get_dead_letter_bigquery_schema():
+    """Tests that get_dead_letter_bigquery_schema returns expected 5-field schema."""
+    schema = get_dead_letter_bigquery_schema()
+    field_names = [f["name"] for f in schema]
+
+    assert len(schema) == 5
+    assert field_names == [
+        "processing_time",
+        "error_message",
+        "stack_trace",
+        "original_payload",
+        "subscription_name",
+    ]
+
+    # Verify key type mappings
+    field_map = {f["name"]: f for f in schema}
+    assert field_map["processing_time"]["type"] == "TIMESTAMP"
+    assert field_map["error_message"]["type"] == "STRING"
+    assert field_map["stack_trace"]["type"] == "STRING"
+    assert field_map["original_payload"]["type"] == "STRING"

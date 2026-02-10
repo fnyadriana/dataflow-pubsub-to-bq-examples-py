@@ -108,7 +108,7 @@ The pipeline fetches an Avro schema from the Pub/Sub Schema Registry at startup 
 **How it works:**
 - An Avro schema is registered in the Pub/Sub Schema Registry
 - A mirror publisher bridges the public topic to a schema-validated topic (pure pass-through)
-- Pub/Sub validates every message at publish time -- invalid data is rejected before entering the system
+- Pub/Sub validates every message at publish time -- messages with missing required fields or wrong types are rejected before entering the system (extra fields are accepted per Avro forward compatibility)
 - The pipeline fetches the Avro schema at startup, generates BQ columns from it, and extracts fields dynamically
 - No DLQ needed because schema validation happens at publish time
 
@@ -160,11 +160,14 @@ dataflow-pubsub-to-bq-examples-py/
 ├── run_dataflow_json.sh                   # Deployment: Raw JSON ELT
 ├── run_dataflow_schema_driven.sh          # Deployment: Schema-driven ETL
 ├── schemas/
-│   └── taxi_ride_v1.avsc                  # Avro v1 schema definition
+│   ├── taxi_ride_v1.avsc                  # Avro v1 schema definition
+│   └── taxi_ride_v2.avsc                  # Avro v2 schema (adds enrichment fields)
 ├── scripts/
+│   ├── enrich_taxi_ride.yaml             # SMT definition for v2 enrichment
 │   ├── generate_bq_schema.py             # BQ schema generator from registry
 │   ├── publish_to_schema_topic.py        # Mirror publisher (pass-through relay)
-│   └── run_mirror_publisher.sh           # Mirror publisher launcher
+│   ├── run_mirror_publisher.sh           # v1 mirror publisher launcher
+│   └── run_schema_evolution.sh           # Phase 2: schema evolution + v2 publisher
 ├── docs/
 │   └── schema_evolution_plan.md           # Schema evolution design doc
 ├── tests/

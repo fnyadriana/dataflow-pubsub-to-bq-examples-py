@@ -103,6 +103,8 @@ The pipeline fetches an Avro schema from the Pub/Sub Schema Registry at startup 
 ./run_dataflow_schema_driven.sh
 # In a separate terminal:
 ./scripts/run_mirror_publisher.sh
+# In a third terminal (for v2 schema evolution):
+./scripts/run_schema_evolution.sh
 ```
 
 **How it works:**
@@ -296,6 +298,12 @@ Then start the mirror publisher in a separate terminal:
 ```
 
 The mirror publisher bridges the public taxi topic to the schema-validated topic. It runs as a separate process and should remain running alongside the Dataflow job.
+
+To tear down all schema-driven resources (Dataflow job, subscriptions, topic, schema, BQ table):
+
+```bash
+./scripts/cleanup_schema_driven.sh
+```
 
 ## Performance Optimizations
 

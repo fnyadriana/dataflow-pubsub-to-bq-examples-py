@@ -11,7 +11,7 @@
 set -e
 
 # --- Configuration ---
-PROJECT_ID="your-project-id"
+PROJECT_ID="tiff-sandbox-363202"
 REGION="us-central1"
 TEMP_BUCKET="gs://${PROJECT_ID}-dataflow-bucket"
 BIGQUERY_DATASET="demo_dataset"

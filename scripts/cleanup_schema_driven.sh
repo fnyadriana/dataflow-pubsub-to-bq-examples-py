@@ -23,7 +23,7 @@
 set -e
 
 # --- Configuration (must match run_dataflow_schema_driven.sh) ---
-PROJECT_ID="your-project-id"
+PROJECT_ID="tiff-sandbox-363202"
 REGION="us-central1"
 BIGQUERY_DATASET="demo_dataset"
 BIGQUERY_TABLE="taxi_events_schema"

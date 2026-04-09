@@ -9,9 +9,9 @@
 set -e
 
 # --- Configuration ---
-PROJECT_ID="your-project-id"
+PROJECT_ID="tiff-sandbox-363202"
 REGION="us-central1"
-TEMP_BUCKET="gs://your-gcs-bucket"
+TEMP_BUCKET="gs://${PROJECT_ID}-dataflow-bucket"
 BIGQUERY_DATASET="demo_dataset"
 BIGQUERY_TABLE="taxi_events_json"
 SUBSCRIPTION_NAME="taxi_telemetry_json"

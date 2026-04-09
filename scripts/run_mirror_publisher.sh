@@ -10,7 +10,7 @@
 set -e
 
 # --- Configuration (must match run_dataflow_schema_driven.sh) ---
-PROJECT_ID="your-project-id"
+PROJECT_ID="tiff-sandbox-363202"
 SCHEMA_TOPIC="taxi_telemetry_schema"
 SOURCE_SUBSCRIPTION="taxi_telemetry_schema_source"
 
